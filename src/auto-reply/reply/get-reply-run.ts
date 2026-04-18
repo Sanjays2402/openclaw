@@ -308,6 +308,9 @@ export async function runPreparedReply(
   const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
   const baseBodyTrimmedRaw = baseBody.trim();
   const normalizedCommandBody = command.commandBodyNormalized.trim();
+  const softResetTriggered = command.softResetTriggered === true;
+  const softResetTail = command.softResetTail?.trim() ?? "";
+  const effectiveResetTriggered = resetTriggered || softResetTriggered;
   const isWholeMessageCommand =
     normalizedCommandBody === rawBodyTrimmed ||
     normalizedCommandBody === rawBodyTrimmed.toLowerCase();
@@ -323,9 +326,11 @@ export async function runPreparedReply(
   }
   const isBareNewOrReset = /^\/(new|reset)$/.test(normalizedCommandBody);
   const isBareSessionReset =
-    isNewSession &&
-    ((baseBodyTrimmedRaw.length === 0 && rawBodyTrimmed.length > 0) || isBareNewOrReset);
-  const startupAction = /^\/reset(?:\s|$)/.test(normalizedCommandBody) ? "reset" : "new";
+    softResetTriggered ||
+    (isNewSession &&
+      ((baseBodyTrimmedRaw.length === 0 && rawBodyTrimmed.length > 0) || isBareNewOrReset));
+  const startupAction =
+    softResetTriggered || /^\/reset(?:\s|$)/.test(normalizedCommandBody) ? "reset" : "new";
   const spawnedWorkspaceOverride = resolveIngressWorkspaceOverrideForSpawnedRun({
     spawnedBy: sessionEntry?.spawnedBy,
     workspaceDir: sessionEntry?.spawnedWorkspaceDir,
@@ -372,7 +377,7 @@ export async function runPreparedReply(
     envelopeOptions,
   );
   const baseBodyForPrompt = isBareSessionReset
-    ? [startupContextPrelude, baseBodyFinal].filter(Boolean).join("\n\n")
+    ? [startupContextPrelude, baseBodyFinal, softResetTail].filter(Boolean).join("\n\n")
     : [inboundUserContext, baseBodyFinal].filter(Boolean).join("\n\n");
   const hasUserBody = baseBodyFinal.trim().length > 0;
   const hasMediaAttachment = Boolean(
@@ -751,6 +756,6 @@ export async function runPreparedReply(
     sessionCtx,
     shouldInjectGroupIntro,
     typingMode,
-    resetTriggered,
+    resetTriggered: effectiveResetTriggered,
   });
 }
