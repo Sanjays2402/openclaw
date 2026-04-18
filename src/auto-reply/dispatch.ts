@@ -18,13 +18,7 @@ export type DispatchInboundResult = DispatchFromConfigResult;
 export { withReplyDispatcher } from "./dispatch-dispatcher.js";
 
 type InternalDispatchReplyOptions = Omit<GetReplyOptions, "onToolResult" | "onBlockReply"> & {
-  internalTypingController?: {
-    startTypingLoop: () => Promise<void>;
-  };
-};
-
-type InternalReplyDispatcherWithTypingOptions = ReplyDispatcherWithTypingOptions & {
-  startTypingOnAccept?: boolean;
+  internalStartTypingOnAccept?: boolean;
 };
 
 export async function dispatchInboundMessage(params: {
@@ -59,12 +53,6 @@ export async function dispatchInboundMessageWithBufferedDispatcher(params: {
     createReplyDispatcherWithTyping(params.dispatcherOptions);
   const internalReplyOptions = replyOptions as InternalDispatchReplyOptions;
   try {
-    if (
-      (params.dispatcherOptions as InternalReplyDispatcherWithTypingOptions).startTypingOnAccept ===
-      true
-    ) {
-      await internalReplyOptions.internalTypingController?.startTypingLoop();
-    }
     return await dispatchInboundMessage({
       ctx: params.ctx,
       cfg: params.cfg,

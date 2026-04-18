@@ -105,6 +105,13 @@ function loadReplyMediaPathsRuntime() {
   return replyMediaPathsRuntimePromise;
 }
 
+type InternalDispatchReplyOptions = DispatchFromConfigParams["replyOptions"] & {
+  internalTypingController?: {
+    startTypingLoop: () => Promise<void>;
+  };
+  internalStartTypingOnAccept?: boolean;
+};
+
 async function maybeApplyTtsToReplyPayload(
   params: Parameters<Awaited<ReturnType<typeof loadTtsRuntime>>["maybeApplyTtsToPayload"]>[0],
 ) {
@@ -879,6 +886,10 @@ export async function dispatchReplyFromConfig(
       originatingChannel,
       systemEvent: shouldRouteToOriginating,
     });
+    const internalReplyOptions = params.replyOptions as InternalDispatchReplyOptions | undefined;
+    if (internalReplyOptions?.internalStartTypingOnAccept && !typing.suppressTyping) {
+      await internalReplyOptions.internalTypingController?.startTypingLoop();
+    }
 
     const replyResolver =
       params.replyResolver ?? (await loadGetReplyFromConfigRuntime()).getReplyFromConfig;

@@ -1,94 +1,60 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
-import { buildTestCtx } from "./reply/test-ctx.js";
-
-type DispatchReplyFromConfigFn =
-  typeof import("./reply/dispatch-from-config.js").dispatchReplyFromConfig;
-type FinalizeInboundContextFn = typeof import("./reply/inbound-context.js").finalizeInboundContext;
-
-const hoisted = vi.hoisted(() => ({
-  dispatchReplyFromConfigMock: vi.fn(),
-  finalizeInboundContextMock: vi.fn((...args: unknown[]) => args[0]),
-}));
-
-vi.mock("./reply/dispatch-from-config.js", () => ({
-  dispatchReplyFromConfig: (...args: Parameters<DispatchReplyFromConfigFn>) =>
-    hoisted.dispatchReplyFromConfigMock(...args),
-}));
-
-vi.mock("./reply/inbound-context.js", () => ({
-  finalizeInboundContext: (...args: Parameters<FinalizeInboundContextFn>) =>
-    hoisted.finalizeInboundContextMock(...args),
-}));
-
-const { dispatchInboundMessageWithBufferedDispatcher } = await import("./dispatch.js");
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createReplyDispatcherWithTyping } from "./reply/reply-dispatcher.js";
 
 type InternalReplyOptions = {
-  onReplyStart?: () => Promise<void>;
+  internalTypingController?: {
+    startTypingLoop: () => Promise<void>;
+  };
+  internalStartTypingOnAccept?: boolean;
 };
 
-describe("dispatch inbound typing on accept", () => {
-  beforeEach(() => {
-    hoisted.dispatchReplyFromConfigMock.mockReset();
-    hoisted.finalizeInboundContextMock.mockClear();
+describe("reply dispatcher early typing", () => {
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("starts typing before dispatch work begins and does not restart after a silent completion", async () => {
-    const sendComposing = vi.fn(async () => undefined);
-    let capturedReplyOptions: InternalReplyOptions | undefined;
-
-    hoisted.dispatchReplyFromConfigMock.mockImplementationOnce(async (params: unknown) => {
-      const replyParams = params as { replyOptions?: InternalReplyOptions };
-      expect(sendComposing).toHaveBeenCalledTimes(1);
-      capturedReplyOptions = replyParams.replyOptions;
-      return undefined;
+  it("creates an eager typing controller only for opt-in paths", () => {
+    const optedIn = createReplyDispatcherWithTyping({
+      deliver: async () => undefined,
+      onReplyStart: async () => undefined,
+      startTypingOnAccept: true,
+      typingIntervalSeconds: 1,
+    } as never);
+    const defaultPath = createReplyDispatcherWithTyping({
+      deliver: async () => undefined,
+      onReplyStart: async () => undefined,
     });
 
-    await dispatchInboundMessageWithBufferedDispatcher({
-      ctx: buildTestCtx({
-        ChatType: "direct",
-        OriginatingChannel: "whatsapp",
-        Provider: "whatsapp",
-        Surface: "whatsapp",
-      }),
-      cfg: {} as OpenClawConfig,
-      dispatcherOptions: {
-        deliver: async () => undefined,
-        onReplyStart: sendComposing,
-        startTypingOnAccept: true,
-      } as never,
-    });
-
-    expect(capturedReplyOptions?.onReplyStart).toBeTypeOf("function");
-
-    await capturedReplyOptions?.onReplyStart?.();
-
-    expect(sendComposing).toHaveBeenCalledTimes(1);
+    expect((optedIn.replyOptions as InternalReplyOptions).internalTypingController).toBeDefined();
+    expect((optedIn.replyOptions as InternalReplyOptions).internalStartTypingOnAccept).toBe(true);
+    expect(
+      (defaultPath.replyOptions as InternalReplyOptions).internalTypingController,
+    ).toBeUndefined();
+    expect((defaultPath.replyOptions as InternalReplyOptions).internalStartTypingOnAccept).toBe(
+      false,
+    );
   });
 
-  it("keeps the old deferred behavior when typing-on-accept is not enabled", async () => {
-    const sendComposing = vi.fn(async () => undefined);
+  it("uses the configured typing interval for eager early-typing controllers", async () => {
+    vi.useFakeTimers();
+    const onReplyStart = vi.fn(async () => undefined);
+    const { replyOptions, markRunComplete, markDispatchIdle } = createReplyDispatcherWithTyping({
+      deliver: async () => undefined,
+      onReplyStart,
+      startTypingOnAccept: true,
+      typingIntervalSeconds: 1,
+    } as never);
 
-    hoisted.dispatchReplyFromConfigMock.mockImplementationOnce(async (params: unknown) => {
-      const replyParams = params as { replyOptions?: InternalReplyOptions };
-      expect(sendComposing).not.toHaveBeenCalled();
-      await replyParams.replyOptions?.onReplyStart?.();
-      expect(sendComposing).toHaveBeenCalledTimes(1);
-      return undefined;
-    });
+    const typing = (replyOptions as InternalReplyOptions).internalTypingController;
+    expect(typing).toBeDefined();
 
-    await dispatchInboundMessageWithBufferedDispatcher({
-      ctx: buildTestCtx({
-        ChatType: "direct",
-        OriginatingChannel: "whatsapp",
-        Provider: "whatsapp",
-        Surface: "whatsapp",
-      }),
-      cfg: {} as OpenClawConfig,
-      dispatcherOptions: {
-        deliver: async () => undefined,
-        onReplyStart: sendComposing,
-      },
-    });
+    await typing?.startTypingLoop();
+    expect(onReplyStart).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onReplyStart).toHaveBeenCalledTimes(2);
+
+    markRunComplete();
+    markDispatchIdle();
   });
 });

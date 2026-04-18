@@ -74,6 +74,7 @@ type InternalReplyDispatcherWithTypingOptions = ReplyDispatcherWithTypingOptions
    * gating accepts the message, before reply hooks and lazy runtime bootstrap.
    */
   startTypingOnAccept?: boolean;
+  typingIntervalSeconds?: number;
 };
 
 type InternalTypingReplyOptions = Pick<
@@ -81,6 +82,7 @@ type InternalTypingReplyOptions = Pick<
   "onReplyStart" | "onTypingController" | "onTypingCleanup"
 > & {
   internalTypingController?: TypingController;
+  internalStartTypingOnAccept?: boolean;
 };
 
 type ReplyDispatcherWithTypingResult = {
@@ -235,19 +237,24 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
 export function createReplyDispatcherWithTyping(
   options: ReplyDispatcherWithTypingOptions,
 ): ReplyDispatcherWithTypingResult {
+  const internalOptions = options as InternalReplyDispatcherWithTypingOptions;
   const { typingCallbacks, onReplyStart, onIdle, onCleanup, ...dispatcherOptions } =
-    options as InternalReplyDispatcherWithTypingOptions;
+    internalOptions;
   const resolvedOnReplyStart = onReplyStart ?? typingCallbacks?.onReplyStart;
   const resolvedOnIdle = onIdle ?? typingCallbacks?.onIdle;
   const resolvedOnCleanup = onCleanup ?? typingCallbacks?.onCleanup;
-  const typingController = createTypingController({
-    onReplyStart: resolvedOnReplyStart,
-    onCleanup: resolvedOnCleanup,
-  });
+  const shouldStartTypingOnAccept = internalOptions.startTypingOnAccept === true;
+  let typingController: TypingController | undefined = shouldStartTypingOnAccept
+    ? createTypingController({
+        onReplyStart: resolvedOnReplyStart,
+        onCleanup: resolvedOnCleanup,
+        typingIntervalSeconds: internalOptions.typingIntervalSeconds,
+      })
+    : undefined;
   const dispatcher = createReplyDispatcher({
     ...dispatcherOptions,
     onIdle: () => {
-      typingController.markDispatchIdle();
+      typingController?.markDispatchIdle();
       resolvedOnIdle?.();
     },
   });
@@ -255,9 +262,13 @@ export function createReplyDispatcherWithTyping(
   return {
     dispatcher,
     replyOptions: {
-      onReplyStart: typingController.onReplyStart,
+      onReplyStart: typingController?.onReplyStart ?? resolvedOnReplyStart,
       onTypingCleanup: resolvedOnCleanup,
       onTypingController: (typing) => {
+        if (!typingController) {
+          typingController = typing;
+          return;
+        }
         if (typing !== typingController) {
           // Reuse the eagerly-started controller so late run-start hooks don't
           // spin up a second composing lifecycle for the same inbound turn.
@@ -265,13 +276,14 @@ export function createReplyDispatcherWithTyping(
         }
       },
       internalTypingController: typingController,
+      internalStartTypingOnAccept: shouldStartTypingOnAccept,
     },
     markDispatchIdle: () => {
-      typingController.markDispatchIdle();
+      typingController?.markDispatchIdle();
       resolvedOnIdle?.();
     },
     markRunComplete: () => {
-      typingController.markRunComplete();
+      typingController?.markRunComplete();
     },
   };
 }

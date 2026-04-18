@@ -42,6 +42,7 @@ import { createTypingController, type TypingController } from "./typing.js";
 type ResetCommandAction = "new" | "reset";
 type InternalGetReplyOptions = GetReplyOptions & {
   internalTypingController?: TypingController;
+  internalStartTypingOnAccept?: boolean;
 };
 
 let sessionResetModelRuntimePromise: Promise<

@@ -53,6 +53,12 @@ function resolveWhatsAppDisableBlockStreaming(cfg: ReturnType<LoadConfigFn>): bo
   return !cfg.channels.whatsapp.blockStreaming;
 }
 
+function resolveWhatsAppTypingIntervalSeconds(cfg: ReturnType<LoadConfigFn>): number | undefined {
+  const configuredTypingSeconds =
+    cfg.agents?.defaults?.typingIntervalSeconds ?? cfg.session?.typingIntervalSeconds;
+  return typeof configuredTypingSeconds === "number" ? configuredTypingSeconds : undefined;
+}
+
 function shouldSuppressWhatsAppPayload(
   payload: ReplyPayload,
   info: { kind: ReplyLifecycleKind },
@@ -267,6 +273,7 @@ export async function dispatchWhatsAppBufferedReply(params: {
     // WhatsApp UX is especially sensitive to cold-start silence. Start
     // composing as soon as this inbound message has passed channel gating.
     startTypingOnAccept: true,
+    typingIntervalSeconds: resolveWhatsAppTypingIntervalSeconds(params.cfg),
     onHeartbeatStrip: () => {
       if (!didLogHeartbeatStrip) {
         didLogHeartbeatStrip = true;
