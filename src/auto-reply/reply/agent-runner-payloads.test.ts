@@ -267,6 +267,80 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(0);
   });
 
+  it("deduplicates direct-send block keys using normalized media paths (regression: #68862)", async () => {
+    // Mirrors the Telegram MEDIA: bug: the direct-send path stores the block key
+    // AFTER media normalization, but the final-payload filter used to compute the
+    // key on the ORIGINAL (pre-normalization) path, letting the image through a
+    // second time.
+    const normalizeMediaPaths = async (payload: { mediaUrl?: string; mediaUrls?: string[] }) => ({
+      ...payload,
+      mediaUrl:
+        payload.mediaUrl === "/home/user/workspace/image.png"
+          ? "/home/user/.openclaw/media/outbound/xxx.png"
+          : payload.mediaUrl,
+      mediaUrls: payload.mediaUrls?.map((v) =>
+        v === "/home/user/workspace/image.png" ? "/home/user/.openclaw/media/outbound/xxx.png" : v,
+      ),
+    });
+
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>();
+    // Key was stored with the NORMALIZED outbound path, as sendDirectBlockReply does today.
+    directlySentBlockKeys.add(
+      createBlockReplyContentKey({
+        mediaUrl: "/home/user/.openclaw/media/outbound/xxx.png",
+      }),
+    );
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: false,
+      blockReplyPipeline: null,
+      directlySentBlockKeys,
+      normalizeMediaPaths,
+      payloads: [{ mediaUrl: "/home/user/workspace/image.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(0);
+  });
+
+  it("deduplicates pipeline-sent payloads using normalized media paths (regression: #68862)", async () => {
+    const normalizeMediaPaths = async (payload: { mediaUrl?: string; mediaUrls?: string[] }) => ({
+      ...payload,
+      mediaUrl:
+        payload.mediaUrl === "/home/user/workspace/image.png"
+          ? "/home/user/.openclaw/media/outbound/xxx.png"
+          : payload.mediaUrl,
+      mediaUrls: payload.mediaUrls?.map((v) =>
+        v === "/home/user/workspace/image.png" ? "/home/user/.openclaw/media/outbound/xxx.png" : v,
+      ),
+    });
+
+    const pipeline: Parameters<typeof buildReplyPayloads>[0]["blockReplyPipeline"] = {
+      enqueue: () => {},
+      flush: async () => {},
+      stop: () => {},
+      hasBuffered: () => false,
+      didStream: () => true,
+      isAborted: () => false,
+      // Simulate a pipeline that stored the NORMALIZED outbound path as its
+      // sent-content key (current behaviour of block-reply-pipeline).
+      hasSentPayload: (payload) =>
+        (payload.mediaUrl ?? payload.mediaUrls?.[0]) ===
+        "/home/user/.openclaw/media/outbound/xxx.png",
+    };
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      blockReplyPipeline: pipeline,
+      normalizeMediaPaths,
+      payloads: [{ mediaUrl: "/home/user/workspace/image.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(0);
+  });
+
   it("does not suppress same-target replies when accountId differs", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,

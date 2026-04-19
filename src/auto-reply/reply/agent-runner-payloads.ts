@@ -214,17 +214,38 @@ export async function buildReplyPayloads(params: {
       })
     : dedupedPayloads;
   // Filter out payloads already sent via pipeline or directly during tool flush.
-  const filteredPayloads = shouldDropFinalPayloads
-    ? mediaFilteredPayloads.filter((payload) => payload.isError)
-    : params.blockStreamingEnabled
-      ? mediaFilteredPayloads.filter(
-          (payload) => !params.blockReplyPipeline?.hasSentPayload(payload),
-        )
-      : params.directlySentBlockKeys?.size
-        ? mediaFilteredPayloads.filter(
-            (payload) => !params.directlySentBlockKeys!.has(createBlockReplyContentKey(payload)),
-          )
-        : mediaFilteredPayloads;
+  // Block-streaming and direct-send paths both key their "already sent" sets on
+  // payloads whose media paths have been resolved to the outbound location
+  // (e.g. ~/.openclaw/media/outbound/xxx.png), so we must normalize here too
+  // before computing the dedup key. Otherwise a MEDIA: tag whose file lives
+  // outside the outbound directory would produce a different key on this path
+  // and get delivered a second time. See openclaw/openclaw#68862.
+  const pipelineChecksSentPayload =
+    params.blockStreamingEnabled && params.blockReplyPipeline !== null;
+  const directChecksSentPayload =
+    !params.blockStreamingEnabled && !!params.directlySentBlockKeys?.size;
+
+  let filteredPayloads: ReplyPayload[];
+  if (shouldDropFinalPayloads) {
+    filteredPayloads = mediaFilteredPayloads.filter((payload) => payload.isError);
+  } else if (pipelineChecksSentPayload || directChecksSentPayload) {
+    const kept: ReplyPayload[] = [];
+    for (const payload of mediaFilteredPayloads) {
+      const dedupCandidate = await normalizeReplyPayloadMedia({
+        payload,
+        normalizeMediaPaths: params.normalizeMediaPaths,
+      });
+      const alreadySent = pipelineChecksSentPayload
+        ? (params.blockReplyPipeline?.hasSentPayload(dedupCandidate) ?? false)
+        : params.directlySentBlockKeys!.has(createBlockReplyContentKey(dedupCandidate));
+      if (!alreadySent) {
+        kept.push(payload);
+      }
+    }
+    filteredPayloads = kept;
+  } else {
+    filteredPayloads = mediaFilteredPayloads;
+  }
   const replyPayloads = suppressMessagingToolReplies ? [] : filteredPayloads;
 
   return {
