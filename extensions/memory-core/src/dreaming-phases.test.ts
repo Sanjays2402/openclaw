@@ -1888,7 +1888,7 @@ describe("memory-core dreaming phases", () => {
         // Pure cron scaffolding — should be filtered.
         makeMessage("user", "[cron:abc-123 WHOOP Token Refresh] refresh the token please", 0),
         makeMessage("assistant", "NO_REPLY", 5),
-        makeMessage("user", "[cron: heartbeat-daily] heartbeat poll", 10),
+        makeMessage("user", "[cron:heartbeat-daily HB] heartbeat poll", 10),
         makeMessage("assistant", "HEARTBEAT_OK", 15),
         // Meaningful exchange that happens to mention cron in prose — must stay.
         makeMessage(
@@ -1900,6 +1900,14 @@ describe("memory-core dreaming phases", () => {
           "assistant",
           "Sure — the cleanest approach is a systemd timer, but cron also works.",
           25,
+        ),
+        // Bracketed cron expression at the start of a user question — must
+        // NOT be filtered. The jobId regex requires ≥4 alphanumeric chars
+        // which a leading `0` / `*` of a cron expression never satisfies.
+        makeMessage(
+          "user",
+          "[cron:0 3 * * *] explain this schedule please",
+          30,
         ),
       ].join("\n") + "\n",
       "utf-8",
@@ -1950,12 +1958,15 @@ describe("memory-core dreaming phases", () => {
 
     // Automation scaffolding must not leak into the corpus.
     expect(corpus).not.toContain("[cron:abc-123");
-    expect(corpus).not.toContain("[cron: heartbeat-daily");
+    expect(corpus).not.toContain("[cron:heartbeat-daily");
     expect(corpus).not.toMatch(/Assistant:\s*NO_REPLY/);
     expect(corpus).not.toMatch(/Assistant:\s*HEARTBEAT_OK/);
 
     // Legitimate prose that merely mentions cron must still be ingested.
     expect(corpus).toContain("wire up a cron job to back up the vault");
     expect(corpus).toContain("systemd timer, but cron also works");
+    // User questions that happen to start with a raw cron expression in
+    // brackets must NOT be treated as runtime cron scaffolding.
+    expect(corpus).toContain("[cron:0 3 * * *] explain this schedule");
   });
 });

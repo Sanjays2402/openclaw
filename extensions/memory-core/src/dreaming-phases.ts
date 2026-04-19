@@ -555,9 +555,12 @@ function normalizeSessionCorpusSnippet(value: string): string {
  * be skipped by dreaming ingestion.
  *
  * Concretely this drops:
- * - Cron-triggered user prompts of the shape `User: [cron:<id> ...]` (and
- *   the bracketed variant with or without a trailing label), which are
- *   runtime-generated and leak the raw cron payload into the corpus.
+ * - Cron-triggered user prompts emitted by the cron runtime, which have the
+ *   shape `User: [cron:<jobId> <jobName>] <message>` (see
+ *   `src/cron/isolated-agent/run.ts:405`). Job IDs are at least four
+ *   alphanumeric/underscore/dash characters in practice — tight enough to
+ *   leave a user question like “User: [cron:0 3 * * *] explain this”
+ *   untouched while still catching every runtime-injected prompt.
  * - Assistant `NO_REPLY` sentinels, which are the documented "silent reply"
  *   marker from the system prompt rather than actual content.
  * - System-injected `HEARTBEAT_OK` acknowledgements from heartbeat polls.
@@ -569,22 +572,24 @@ function normalizeSessionCorpusSnippet(value: string): string {
  * See openclaw/openclaw#68449 issue 2.
  */
 function isCronNoiseSessionSnippet(snippet: string): boolean {
-  const trimmed = snippet.trim();
-  if (trimmed.length === 0) {
-    return true;
-  }
-  // Cron-triggered user prompts carry a `[cron:<id>` or `[cron <id>` marker
-  // inside the first ~120 chars of the User: line. Anchoring on `User:` keeps
-  // this from matching legitimate prose that happens to mention "cron".
-  if (/^User:\s*\[\s*cron[:\s]/i.test(trimmed)) {
+  // `snippet` has already been trimmed + max-length-clamped by
+  // `normalizeSessionCorpusSnippet`, and the call site rejects anything
+  // shorter than `SESSION_INGESTION_MIN_SNIPPET_CHARS`, so no empty-string
+  // guard is needed here.
+
+  // Cron-triggered user prompts: `[cron:<jobId> <jobName>] <message>`.
+  // Require the jobId to be ≥ 4 chars of `[A-Za-z0-9_-]` so that user prose
+  // starting with a raw cron expression like `[cron:0 3 * * *] ...` does not
+  // match (the leading field of a cron expression is only 1–3 chars).
+  if (/^User:\s*\[cron:[A-Za-z0-9_-]{4,}[\s\]]/i.test(snippet)) {
     return true;
   }
   // Silent-reply sentinel and heartbeat acks are fixed strings the assistant
   // is instructed to emit instead of real content.
-  if (/^Assistant:\s*NO_REPLY\s*$/i.test(trimmed)) {
+  if (/^Assistant:\s*NO_REPLY\s*$/i.test(snippet)) {
     return true;
   }
-  if (/^Assistant:\s*HEARTBEAT_OK\s*$/i.test(trimmed)) {
+  if (/^Assistant:\s*HEARTBEAT_OK\s*$/i.test(snippet)) {
     return true;
   }
   return false;
