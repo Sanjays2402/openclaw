@@ -1072,7 +1072,9 @@ async function dispatchDiscordCommandInteraction(params: {
       interaction.channel?.type === ChannelType.AnnouncementThread;
     const messageThreadId = !isDirectMessage && isThreadChannel ? channelId : undefined;
     const threadParentId =
-      !isDirectMessage && isThreadChannel ? (interaction.channel.parentId ?? undefined) : undefined;
+      !isDirectMessage && isThreadChannel && interaction.channel && "parentId" in interaction.channel
+        ? (interaction.channel.parentId ?? undefined)
+        : undefined;
     const { effectiveRoute } = await getNativeRouteState();
     const pluginReply = await executePluginCommandImpl({
       command: pluginMatch.command,
