@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
+import { isNestedAgentLane } from "../../agents/lanes.js";
 import {
   normalizeSpawnedRunMetadata,
   resolveIngressWorkspaceOverrideForSpawnedRun,
@@ -947,7 +948,20 @@ export const agentHandlers: GatewayRequestHandlers = {
         messageChannel: originMessageChannel,
         runId,
         lane: request.lane,
-        cleanupBundleMcpOnRunEnd: request.cleanupBundleMcpOnRunEnd === true,
+        // Nested-lane runs (sessions_send / runAgentStep / agent-to-agent
+        // calls) are short-lived ephemeral sessions whose MCP child-process
+        // cohort must be torn down when the run ends — otherwise every call
+        // leaks N processes (where N = configured MCP servers per agent).
+        // The local CLI (--local) and subagent-spawn callers correctly set
+        // this flag themselves; nested-lane gateway calls used to leave it
+        // unset because runAgentStep/sessions_send don't pass it through.
+        // Default to true when the lane is nested and the caller hasn't
+        // explicitly opted out by setting cleanupBundleMcpOnRunEnd=false.
+        // See #70364 for the leak repro.
+        cleanupBundleMcpOnRunEnd:
+          request.cleanupBundleMcpOnRunEnd === true ||
+          (request.cleanupBundleMcpOnRunEnd === undefined &&
+            isNestedAgentLane(request.lane)),
         extraSystemPrompt: request.extraSystemPrompt,
         bootstrapContextMode: request.bootstrapContextMode,
         bootstrapContextRunKind: request.bootstrapContextRunKind,

@@ -1048,6 +1048,50 @@ describe("gateway agent handler", () => {
     expect(capturedEntry?.cliSessionIds).toBeUndefined();
     expect(capturedEntry?.claudeCliSessionId).toBeUndefined();
   });
+
+  // Regression: #70364 — every sessions_send / runAgentStep call leaked a
+  // full cohort of MCP child processes because cleanupBundleMcpOnRunEnd was
+  // hardcoded to opts.local === true at the CLI layer and the gateway
+  // server-method just forwarded the (always-undefined) request flag through.
+  // After the fix, nested-lane runs default cleanupBundleMcpOnRunEnd=true so
+  // disposeSessionMcpRuntime fires when the ephemeral run ends.
+  it.each([
+    { name: "defaults cleanupBundleMcpOnRunEnd=true for lane='nested'", lane: "nested", expected: true },
+    { name: "defaults cleanupBundleMcpOnRunEnd=true for nested-lane prefix", lane: "nested:agent:spark:main", expected: true },
+    { name: "keeps cleanupBundleMcpOnRunEnd=false for non-nested lanes", lane: "main", expected: false },
+    { name: "keeps cleanupBundleMcpOnRunEnd=false when lane is unset", lane: undefined, expected: false },
+  ])("$name (#70364)", async ({ lane, expected }) => {
+    primeMainAgentRun();
+
+    await invokeAgent({
+      message: "nested cleanup probe",
+      sessionKey: "agent:main:main",
+      idempotencyKey: `test-cleanup-${lane ?? "unset"}`,
+      lane,
+    });
+
+    await waitForAssertion(() => expect(mocks.agentCommand).toHaveBeenCalled());
+    const callArgs = mocks.agentCommand.mock.calls.at(-1)?.[0] as { cleanupBundleMcpOnRunEnd: boolean };
+    expect(callArgs.cleanupBundleMcpOnRunEnd).toBe(expected);
+  });
+
+  it("respects an explicit cleanupBundleMcpOnRunEnd=false on a nested-lane request (#70364)", async () => {
+    // Defensive: callers that *want* to keep the runtime alive across nested
+    // runs (e.g. session-mode subagent spawns) must still be able to opt out.
+    primeMainAgentRun();
+
+    await invokeAgent({
+      message: "opt-out probe",
+      sessionKey: "agent:main:main",
+      idempotencyKey: "test-cleanup-optout",
+      lane: "nested",
+      cleanupBundleMcpOnRunEnd: false,
+    });
+
+    await waitForAssertion(() => expect(mocks.agentCommand).toHaveBeenCalled());
+    const callArgs = mocks.agentCommand.mock.calls.at(-1)?.[0] as { cleanupBundleMcpOnRunEnd: boolean };
+    expect(callArgs.cleanupBundleMcpOnRunEnd).toBe(false);
+  });
   it("prunes legacy main alias keys when writing a canonical session entry", async () => {
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {
