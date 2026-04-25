@@ -172,9 +172,6 @@ export async function startGatewayBonjourAdvertiser(
     warn: deps.logger?.warn ?? defaultLogger.warn,
     debug: deps.logger?.debug ?? defaultLogger.debug,
   };
-  const { getResponder, Protocol } = await loadCiaoModule();
-  const restoreConsoleLog = installCiaoConsoleNoiseFilter();
-
   const handleCiaoUnhandledRejection = (reason: unknown): boolean => {
     const classification = classifyCiaoUnhandledRejection(reason);
     if (!classification) {
@@ -189,6 +186,28 @@ export async function startGatewayBonjourAdvertiser(
     logger.debug(`bonjour: ignoring unhandled ciao rejection: ${classification.formatted}`);
     return true;
   };
+
+  // Register the rejection handler BEFORE loading ciao or creating any
+  // service. ciao begins probing as soon as a service is created, and a
+  // cancelled probe (e.g. when the host network reconfigures during early
+  // startup, or in containers where the multicast interface flaps) rejects
+  // the probe promise asynchronously. If the handler isn't installed yet,
+  // that rejection escapes to the global handler and the gateway crashes
+  // with `CIAO PROBING CANCELLED` / `CIAO ANNOUNCEMENT CANCELLED`.
+  // See https://github.com/openclaw/openclaw/issues/71751.
+  const earlyRejectionCleanup = deps.registerUnhandledRejectionHandler?.(
+    handleCiaoUnhandledRejection,
+  );
+
+  let ciaoModule: CiaoModule;
+  try {
+    ciaoModule = await loadCiaoModule();
+  } catch (err) {
+    earlyRejectionCleanup?.();
+    throw err;
+  }
+  const { getResponder, Protocol } = ciaoModule;
+  const restoreConsoleLog = installCiaoConsoleNoiseFilter();
 
   try {
     const hostnameRaw = process.env.OPENCLAW_MDNS_HOSTNAME?.trim() || "openclaw";
@@ -252,10 +271,10 @@ export async function startGatewayBonjourAdvertiser(
         svc: gateway as unknown as BonjourService,
       });
 
-      const cleanupUnhandledRejection =
-        services.length > 0 && deps.registerUnhandledRejectionHandler
-          ? deps.registerUnhandledRejectionHandler(handleCiaoUnhandledRejection)
-          : undefined;
+      // The rejection handler is already registered for the lifetime of
+      // this advertiser (see early registration above), so per-cycle
+      // cleanup is a no-op. Kept on the cycle shape for compatibility.
+      const cleanupUnhandledRejection: (() => void) | undefined = undefined;
 
       return { responder, services, cleanupUnhandledRejection };
     }
@@ -447,10 +466,12 @@ export async function startGatewayBonjourAdvertiser(
         }
         await stopCycle(cycle, { shutdownResponder: true });
         restoreConsoleLog();
+        earlyRejectionCleanup?.();
       },
     };
   } catch (err) {
     restoreConsoleLog();
+    earlyRejectionCleanup?.();
     throw err;
   }
 }
