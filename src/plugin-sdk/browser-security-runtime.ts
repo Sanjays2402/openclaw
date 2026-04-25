@@ -5,7 +5,7 @@ export {
   openFileWithinRoot,
   writeFileFromPathWithinRoot,
 } from "../infra/fs-safe.js";
-export { hasProxyEnvConfigured } from "../infra/net/proxy-env.js";
+export { hasProxyEnvConfigured, matchesNoProxy } from "../infra/net/proxy-env.js";
 export {
   SsrFBlockedError,
   isBlockedHostnameOrIp,

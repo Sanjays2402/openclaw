@@ -1,1 +1,1 @@
-export { hasProxyEnvConfigured } from "openclaw/plugin-sdk/browser-security-runtime";
+export { hasProxyEnvConfigured, matchesNoProxy } from "openclaw/plugin-sdk/browser-security-runtime";

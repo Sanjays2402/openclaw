@@ -3,8 +3,7 @@ import {
   matchesHostnameAllowlist,
   normalizeHostname,
 } from "openclaw/plugin-sdk/browser-security-runtime";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
-import { hasProxyEnvConfigured } from "../infra/net/proxy-env.js";
+import { hasProxyEnvConfigured, matchesNoProxy } from "../infra/net/proxy-env.js";
 import {
   isPrivateNetworkAllowedByPolicy,
   resolvePinnedHostnameWithPolicy,
@@ -18,6 +17,10 @@ const SAFE_NON_NETWORK_URLS = new Set(["about:blank"]);
 function isAllowedNonNetworkNavigationUrl(parsed: URL): boolean {
   // Keep non-network navigation explicit; about:blank is the only allowed bootstrap URL.
   return SAFE_NON_NETWORK_URLS.has(parsed.href);
+}
+
+function normalizeNavigationUrl(url: string): string {
+  return url.trim();
 }
 
 export class InvalidBrowserNavigationUrlError extends Error {
@@ -85,7 +88,7 @@ export async function assertBrowserNavigationAllowed(
     lookupFn?: LookupFn;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
-  const rawUrl = normalizeOptionalString(opts.url) ?? "";
+  const rawUrl = normalizeNavigationUrl(opts.url);
   if (!rawUrl) {
     throw new InvalidBrowserNavigationUrlError("url is required");
   }
@@ -108,11 +111,18 @@ export async function assertBrowserNavigationAllowed(
 
   // Browser network stacks may apply env proxy routing at connect-time, which
   // can bypass strict destination-binding intent from pre-navigation DNS checks.
-  // In strict mode, fail closed unless private-network navigation is explicitly
-  // enabled by policy.
-  if (hasProxyEnvConfigured() && !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy)) {
+  // In strict mode, fail closed unless:
+  //   1. Private-network navigation is explicitly enabled by policy, OR
+  //   2. The target URL matches NO_PROXY, meaning the proxy will not be used
+  //      for this request and SSRF checks remain enforceable.
+  if (
+    hasProxyEnvConfigured() &&
+    !isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy) &&
+    !matchesNoProxy(rawUrl)
+  ) {
     throw new InvalidBrowserNavigationUrlError(
-      "Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set",
+      "Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set. " +
+        "Set NO_PROXY to bypass the proxy for browser targets, or set browser.ssrfPolicy.dangerouslyAllowPrivateNetwork to true.",
     );
   }
 
@@ -150,7 +160,7 @@ export async function assertBrowserNavigationResultAllowed(
     lookupFn?: LookupFn;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
-  const rawUrl = normalizeOptionalString(opts.url) ?? "";
+  const rawUrl = normalizeNavigationUrl(opts.url);
   if (!rawUrl) {
     return;
   }
