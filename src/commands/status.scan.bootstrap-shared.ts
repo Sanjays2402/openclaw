@@ -90,17 +90,17 @@ export async function createStatusScanCoreBootstrap<TAgentStatus>(
     all: params.opts.all,
   });
   const updateTimeoutMs = params.opts.all ? 6500 : 2500;
-  // Always attempt to resolve the tailnet hostname, even when the config
-  // mode is "off".  This lets `openclaw status` surface the actual
-  // Tailscale runtime state (e.g. "off · Running · host.tailnet") so
-  // users can see that the daemon is connected even if they haven't
-  // configured the gateway to use it.  The call is cheap (1.2 s
-  // timeout) and only happens during status scans.
-  const tailscaleDnsPromise = params
-    .getTailnetHostname((cmd, args) =>
-      runExec(cmd, args, { timeoutMs: 1200, maxBuffer: 200_000 }),
-    )
-    .catch(() => null);
+  // Attempt to resolve the tailnet hostname even when the config mode is
+  // "off", so `openclaw status` can surface the actual Tailscale runtime
+  // state (e.g. "off · host.tailnet").  The cold-start skip guard is
+  // respected to keep the fast path instant for fresh/no-channel runs.
+  const tailscaleDnsPromise = skipColdStartNetworkChecks
+    ? Promise.resolve<string | null>(null)
+    : params
+        .getTailnetHostname((cmd, args) =>
+          runExec(cmd, args, { timeoutMs: 1200, maxBuffer: 200_000 }),
+        )
+        .catch(() => null);
   const updatePromise = skipColdStartNetworkChecks
     ? Promise.resolve(buildColdStartUpdateResult())
     : params.getUpdateCheckResult({
