@@ -34,9 +34,11 @@ export async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
   }
 
   if (platform === "win32") {
+    // Use rundll32 url.dll to open URLs safely on Windows without cmd.exe
+    // shell parsing issues (& % < > etc. in URLs are handled correctly).
     return {
-      argv: ["cmd.exe", "/c", "start", ""],
-      command: "cmd.exe",
+      argv: ["rundll32", "url.dll,FileProtocolHandler"],
+      command: "rundll32",
     };
   }
 
