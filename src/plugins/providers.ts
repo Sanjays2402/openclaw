@@ -1,3 +1,4 @@
+import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import { normalizeProviderId } from "../agents/provider-id.js";
 import { withBundledPluginVitestCompat } from "./bundled-compat.js";
 import { normalizePluginsConfig, resolveEffectivePluginActivationState } from "./config-state.js";
@@ -275,6 +276,8 @@ export const __testing = {
   resolveDiscoveredProviderPluginIds,
   resolveDiscoverableProviderOwnerPluginIds,
   resolveBundledProviderCompatPluginIds,
+  splitExplicitModelRef,
+  stripModelProfileSuffix,
   withBundledProviderVitestCompat,
 } as const;
 
@@ -291,8 +294,16 @@ function resolveManifestRegistry(params: {
 
 function stripModelProfileSuffix(value: string): string {
   const trimmed = value.trim();
-  const at = trimmed.indexOf("@");
-  return at <= 0 ? trimmed : trimmed.slice(0, at).trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  // Reuse the canonical splitter so we honor protected suffixes like
+  // LM Studio quants (e.g. `@iq3_xxs`, `@q8_0`) and `@<8-digit-version>`
+  // tags. Without this, callers like /model and provider routing would
+  // truncate `lmstudio/qwen3.6-27b@iq3_xxs` to `lmstudio/qwen3.6-27b`,
+  // sending the wrong model id to the provider.
+  const { model } = splitTrailingAuthProfile(trimmed);
+  return model || trimmed;
 }
 
 function splitExplicitModelRef(rawModel: string): { provider?: string; modelId: string } | null {
