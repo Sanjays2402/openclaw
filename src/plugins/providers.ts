@@ -1,3 +1,4 @@
+import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import { normalizeProviderId } from "../agents/provider-id.js";
 import { withBundledPluginVitestCompat } from "./bundled-compat.js";
 import { normalizePluginsConfig, resolveEffectivePluginActivationState } from "./config-state.js";
@@ -290,9 +291,7 @@ function resolveManifestRegistry(params: {
 }
 
 function stripModelProfileSuffix(value: string): string {
-  const trimmed = value.trim();
-  const at = trimmed.indexOf("@");
-  return at <= 0 ? trimmed : trimmed.slice(0, at).trim();
+  return splitTrailingAuthProfile(value).model;
 }
 
 function splitExplicitModelRef(rawModel: string): { provider?: string; modelId: string } | null {
