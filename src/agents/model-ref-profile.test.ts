@@ -67,15 +67,22 @@ describe("splitTrailingAuthProfile", () => {
     });
   });
 
-  it("keeps @q* quant suffixes in model ids", () => {
+  it("keeps @q* and @iq* quant suffixes in model ids", () => {
     expect(splitTrailingAuthProfile("lmstudio-mb-pro/gemma-4-31b-it@q8_0")).toEqual({
       model: "lmstudio-mb-pro/gemma-4-31b-it@q8_0",
     });
+    expect(splitTrailingAuthProfile("lmstudio/qwen3.6-27b@iq3_xxs")).toEqual({
+      model: "lmstudio/qwen3.6-27b@iq3_xxs",
+    });
   });
 
-  it("supports auth profiles after @q* quant suffixes", () => {
+  it("supports auth profiles after @q* and @iq* quant suffixes", () => {
     expect(splitTrailingAuthProfile("lmstudio-mb-pro/gemma-4-31b-it@q8_0@work")).toEqual({
       model: "lmstudio-mb-pro/gemma-4-31b-it@q8_0",
+      profile: "work",
+    });
+    expect(splitTrailingAuthProfile("lmstudio/qwen3.6-27b@iq3_xxs@work")).toEqual({
+      model: "lmstudio/qwen3.6-27b@iq3_xxs",
       profile: "work",
     });
   });
