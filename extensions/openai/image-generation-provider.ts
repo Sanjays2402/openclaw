@@ -32,6 +32,10 @@ const DEFAULT_OPENAI_CODEX_IMAGE_RESPONSES_MODEL = "gpt-5.5";
 const OPENAI_CODEX_IMAGE_INSTRUCTIONS = "You are an image generation assistant.";
 const OPENAI_TRANSPARENT_BACKGROUND_IMAGE_MODEL = "gpt-image-1.5";
 const DEFAULT_OPENAI_IMAGE_TIMEOUT_MS = 180_000;
+// Azure OpenAI image generation (e.g. gpt-image-2) routinely takes several
+// minutes per request; the upstream OpenAI default of 180s is too aggressive.
+// See https://github.com/openclaw/openclaw/issues/71705.
+const DEFAULT_AZURE_OPENAI_IMAGE_TIMEOUT_MS = 600_000;
 const DEFAULT_OUTPUT_MIME = "image/png";
 const DEFAULT_OUTPUT_EXTENSION = "png";
 const DEFAULT_SIZE = "1024x1024";
@@ -90,8 +94,14 @@ function sanitizeLogValue(value: unknown): string {
     : cleaned;
 }
 
-function resolveOpenAIImageTimeoutMs(timeoutMs: number | undefined): number {
-  return timeoutMs ?? DEFAULT_OPENAI_IMAGE_TIMEOUT_MS;
+function resolveOpenAIImageTimeoutMs(
+  timeoutMs: number | undefined,
+  options?: { isAzure?: boolean },
+): number {
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return timeoutMs;
+  }
+  return options?.isAzure ? DEFAULT_AZURE_OPENAI_IMAGE_TIMEOUT_MS : DEFAULT_OPENAI_IMAGE_TIMEOUT_MS;
 }
 
 function resolveOpenAIImageCount(count: number | undefined): number {
@@ -742,7 +752,7 @@ export function buildOpenAIImageGenerationProvider(): ImageGenerationProvider {
       });
       const count = resolveOpenAIImageCount(req.count);
       const size = req.size ?? DEFAULT_SIZE;
-      const timeoutMs = resolveOpenAIImageTimeoutMs(req.timeoutMs);
+      const timeoutMs = resolveOpenAIImageTimeoutMs(req.timeoutMs, { isAzure });
       const url = isAzure
         ? buildAzureImageUrl(rawBaseUrl, model, isEdit ? "edits" : "generations")
         : `${baseUrl}/images/${isEdit ? "edits" : "generations"}`;
