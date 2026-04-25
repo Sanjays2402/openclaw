@@ -870,7 +870,11 @@ describe("plugin sdk alias helpers", () => {
     }
   });
 
-  it("prefers native Jiti loads on Windows for built JavaScript entries", () => {
+  it("disables native Jiti loads on Windows to avoid ERR_UNSUPPORTED_ESM_URL_SCHEME", () => {
+    // Regression test for https://github.com/openclaw/openclaw/issues/71749:
+    // jiti's native import() path passes raw absolute paths like `C:\\…`
+    // straight to Node's ESM loader, which rejects them as `Received
+    // protocol 'c:'`. We therefore force the non-native path on win32.
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", {
       configurable: true,
@@ -878,9 +882,9 @@ describe("plugin sdk alias helpers", () => {
     });
 
     try {
-      expect(shouldPreferNativeJiti("/repo/dist/plugins/runtime/index.js")).toBe(true);
+      expect(shouldPreferNativeJiti("/repo/dist/plugins/runtime/index.js")).toBe(false);
       expect(shouldPreferNativeJiti(`/repo/${bundledDistPluginFile("browser", "index.js")}`)).toBe(
-        true,
+        false,
       );
     } finally {
       Object.defineProperty(process, "platform", {
@@ -890,7 +894,11 @@ describe("plugin sdk alias helpers", () => {
     }
   });
 
-  it("keeps plugin loader dist shortcuts native on Windows", () => {
+  it("forces transpile path for plugin loader dist shortcuts on Windows", () => {
+    // Companion to the test above: even when a caller sets
+    // `preferBuiltDist`, the win32 short-circuit must still apply, because
+    // the underlying problem is in jiti's native import path — not in our
+    // resolver heuristics.
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", {
       configurable: true,
@@ -902,7 +910,7 @@ describe("plugin sdk alias helpers", () => {
         resolvePluginLoaderJitiTryNative(`/repo/${bundledDistPluginFile("browser", "index.js")}`, {
           preferBuiltDist: true,
         }),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         resolvePluginLoaderJitiTryNative(`/repo/${bundledDistPluginFile("browser", "helper.ts")}`, {
           preferBuiltDist: true,
