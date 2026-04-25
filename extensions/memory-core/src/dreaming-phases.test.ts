@@ -1909,6 +1909,10 @@ describe("memory-core dreaming phases", () => {
           "[cron:0 3 * * *] explain this schedule please",
           30,
         ),
+        // Bracketed cron tags without the runtime job-name segment should also
+        // stay in the corpus; they are ordinary user prose, not scheduler
+        // scaffolding.
+        makeMessage("user", "[cron:daily] explain this tag please", 35),
       ].join("\n") + "\n",
       "utf-8",
     );
@@ -1965,8 +1969,9 @@ describe("memory-core dreaming phases", () => {
     // Legitimate prose that merely mentions cron must still be ingested.
     expect(corpus).toContain("wire up a cron job to back up the vault");
     expect(corpus).toContain("systemd timer, but cron also works");
-    // User questions that happen to start with a raw cron expression in
-    // brackets must NOT be treated as runtime cron scaffolding.
+    // User questions that happen to start with a raw cron expression or a
+    // bracketed cron tag must NOT be treated as runtime cron scaffolding.
     expect(corpus).toContain("[cron:0 3 * * *] explain this schedule");
+    expect(corpus).toContain("[cron:daily] explain this tag");
   });
 });

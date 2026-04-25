@@ -558,9 +558,10 @@ function normalizeSessionCorpusSnippet(value: string): string {
  * - Cron-triggered user prompts emitted by the cron runtime, which have the
  *   shape `User: [cron:<jobId> <jobName>] <message>` (see
  *   `src/cron/isolated-agent/run.ts:405`). Job IDs are at least four
- *   alphanumeric/underscore/dash characters in practice — tight enough to
- *   leave a user question like “User: [cron:0 3 * * *] explain this”
- *   untouched while still catching every runtime-injected prompt.
+ *   alphanumeric/underscore/dash characters in practice, and runtime prompts
+ *   include a job-name segment before the closing bracket — tight enough to
+ *   leave user text like “User: [cron:daily] explain this tag” untouched while
+ *   still catching runtime-injected prompts.
  * - Assistant `NO_REPLY` sentinels, which are the documented "silent reply"
  *   marker from the system prompt rather than actual content.
  * - System-injected `HEARTBEAT_OK` acknowledgements from heartbeat polls.
@@ -578,10 +579,10 @@ function isCronNoiseSessionSnippet(snippet: string): boolean {
   // guard is needed here.
 
   // Cron-triggered user prompts: `[cron:<jobId> <jobName>] <message>`.
-  // Require the jobId to be ≥ 4 chars of `[A-Za-z0-9_-]` so that user prose
-  // starting with a raw cron expression like `[cron:0 3 * * *] ...` does not
-  // match (the leading field of a cron expression is only 1–3 chars).
-  if (/^User:\s*\[cron:[A-Za-z0-9_-]{4,}[\s\]]/i.test(snippet)) {
+  // Require both a ≥4-char jobId and a non-empty job-name segment before `]`.
+  // That keeps user prose such as `[cron:daily] explain this tag` or raw cron
+  // expressions like `[cron:0 3 * * *] ...` from matching the runtime shape.
+  if (/^User:\s*\[cron:[A-Za-z0-9_-]{4,}\s+[^\]]+\]\s+/i.test(snippet)) {
     return true;
   }
   // Silent-reply sentinel and heartbeat acks are fixed strings the assistant
