@@ -302,6 +302,31 @@ describe("doctor state integrity oauth dir checks", () => {
     expect(files.some((name) => name.startsWith("orphan-session.jsonl.deleted."))).toBe(true);
   });
 
+  // Regression for #71960: trajectory sidecars are referenced via
+  // `*.trajectory-path.json` rather than `sessions.json`, so doctor must
+  // not flag them as archivable orphan transcripts.
+  it("does not flag trajectory sidecars as orphan transcripts (#71960)", async () => {
+    const cfg: OpenClawConfig = {};
+    setupSessionState(cfg, process.env, process.env.HOME ?? "");
+    const sessionsDir = resolveSessionTranscriptsDirForAgent("main", process.env, () => tempHome);
+    const sessionId = "b8fc0af0-1692-474b-b11e-636a8b8ab00f";
+    fs.writeFileSync(
+      path.join(sessionsDir, `${sessionId}.trajectory.jsonl`),
+      '{"type":"trajectory"}\n',
+    );
+    fs.writeFileSync(
+      path.join(sessionsDir, `${sessionId}.trajectory-path.json`),
+      JSON.stringify({ filePath: path.join(sessionsDir, `${sessionId}.trajectory.jsonl`) }),
+    );
+    const confirmRuntimeRepair = vi.fn(async () => true);
+    await noteStateIntegrity(cfg, { confirmRuntimeRepair, note: noteMock });
+    expect(stateIntegrityText()).not.toContain(
+      "These .jsonl files are no longer referenced by sessions.json",
+    );
+    expect(confirmRuntimeRepair).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(sessionsDir, `${sessionId}.trajectory.jsonl`))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")(
     "does not archive referenced transcripts when the state dir path resolves through a symlink",
     async () => {

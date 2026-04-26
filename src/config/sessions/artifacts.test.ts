@@ -4,6 +4,7 @@ import {
   isCompactionCheckpointTranscriptFileName,
   isPrimarySessionTranscriptFileName,
   isSessionArchiveArtifactName,
+  isTrajectorySidecarFileName,
   isUsageCountedSessionTranscriptFileName,
   parseCompactionCheckpointTranscriptFileName,
   parseUsageCountedSessionIdFromFileName,
@@ -32,6 +33,21 @@ describe("session artifact helpers", () => {
       false,
     );
     expect(isPrimarySessionTranscriptFileName("sessions.json")).toBe(false);
+    // #71960: trajectory sidecars must not be classified as primary
+    // transcripts; doctor's orphan sweep enumerates this set.
+    expect(
+      isPrimarySessionTranscriptFileName("b8fc0af0-1692-474b-b11e-636a8b8ab00f.trajectory.jsonl"),
+    ).toBe(false);
+    expect(isPrimarySessionTranscriptFileName("abc.trajectory.jsonl")).toBe(false);
+  });
+
+  it("classifies trajectory sidecar file names (#71960)", () => {
+    expect(isTrajectorySidecarFileName("abc.trajectory.jsonl")).toBe(true);
+    expect(
+      isTrajectorySidecarFileName("b8fc0af0-1692-474b-b11e-636a8b8ab00f.trajectory.jsonl"),
+    ).toBe(true);
+    expect(isTrajectorySidecarFileName("abc.jsonl")).toBe(false);
+    expect(isTrajectorySidecarFileName("abc.trajectory-path.json")).toBe(false);
   });
 
   it("classifies usage-counted transcript files", () => {

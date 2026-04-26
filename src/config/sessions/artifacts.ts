@@ -40,6 +40,18 @@ export function isCompactionCheckpointTranscriptFileName(fileName: string): bool
   return parseCompactionCheckpointTranscriptFileName(fileName) !== null;
 }
 
+/**
+ * Trajectory sidecars are written next to the primary session transcript as
+ * `<sessionFile>.trajectory.jsonl` (or `<sessionId>.trajectory.jsonl` when no
+ * primary transcript is colocated). They are referenced from a sibling
+ * `*.trajectory-path.json` pointer file rather than `sessions.json`, so they
+ * must not be treated as primary transcripts by orphan-detection or
+ * usage-accounting code paths. See #71960.
+ */
+export function isTrajectorySidecarFileName(fileName: string): boolean {
+  return fileName.endsWith(".trajectory.jsonl");
+}
+
 export function isPrimarySessionTranscriptFileName(fileName: string): boolean {
   if (fileName === "sessions.json") {
     return false;
@@ -48,6 +60,9 @@ export function isPrimarySessionTranscriptFileName(fileName: string): boolean {
     return false;
   }
   if (isCompactionCheckpointTranscriptFileName(fileName)) {
+    return false;
+  }
+  if (isTrajectorySidecarFileName(fileName)) {
     return false;
   }
   return !isSessionArchiveArtifactName(fileName);
