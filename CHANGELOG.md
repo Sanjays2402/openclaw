@@ -30,6 +30,7 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Control UI webchat: keep the chat UI mounted across transient WebSocket reconnects (tab refocus, gateway restart, network blips) instead of flashing the full credentials gate every cycle. Track a sticky per-tab `hasEverConnected` flag set on the first successful hello; reset it on explicit auth/pairing failures and on server-initiated revocation closes (code `4001` reasons `gateway auth changed`/`device removed`/`session revoked`) so the gate still appears for genuine re-auth even when no structured error payload is forwarded. Fixes #72500. Thanks @brandco.
 - fix(infra): block workspace state-directory env override [AI]. (#75940) Thanks @pgondhi987.
 - MCP/OpenAI: normalize parameter-free tool schemas whose top-level object `properties` is missing, null, or invalid before sending tools to OpenAI, so MCP tools without params stay usable. Fixes #75362. Thanks @tolkonepiu and @SymbolStar.
 - TTS: honor explicit short `[[tts:text]]...[[/tts:text]]` blocks while keeping untagged short auto-TTS suppressed, so tagged voice replies are synthesized instead of being dropped as empty voice-only payloads. Fixes #73758. Thanks @yfge.
