@@ -1,9 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getMessageContentMock = vi.hoisted(() => vi.fn());
+const saveMediaBufferMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@line/bot-sdk", () => ({
   messagingApi: {
@@ -29,6 +27,15 @@ vi.mock("openclaw/plugin-sdk/runtime-env", () => ({
   logVerbose: () => {},
 }));
 
+vi.mock("openclaw/plugin-sdk/media-store", () => ({
+  saveMediaBuffer: (
+    buffer: Buffer,
+    contentType?: string,
+    subdir = "inbound",
+    maxBytes = 10 * 1024 * 1024,
+  ) => saveMediaBufferMock(buffer, contentType, subdir, maxBytes),
+}));
+
 let downloadLineMedia: typeof import("./download.js").downloadLineMedia;
 
 async function* chunks(parts: Buffer[]): AsyncGenerator<Buffer> {
@@ -45,41 +52,37 @@ describe("downloadLineMedia", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     getMessageContentMock.mockReset();
+    saveMediaBufferMock.mockReset();
+    saveMediaBufferMock.mockImplementation(
+      async (buffer: Buffer, contentType?: string) => ({
+        path: `/persisted/inbound/media-${contentType ?? "bin"}`,
+        size: buffer.length,
+        contentType,
+      }),
+    );
   });
 
-  it("does not derive temp file path from external messageId", async () => {
-    const messageId = "a/../../../../etc/passwd";
+  it("persists inbound media via saveMediaBuffer (inbound subdir)", async () => {
     const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
     getMessageContentMock.mockResolvedValueOnce(chunks([jpeg]));
 
-    const writeSpy = vi.spyOn(fs.promises, "writeFile").mockResolvedValueOnce(undefined);
-
-    const result = await downloadLineMedia(messageId, "token");
-    const writtenPath = writeSpy.mock.calls[0]?.[0];
+    const result = await downloadLineMedia("mid", "token");
 
     expect(result.size).toBe(jpeg.length);
     expect(result.contentType).toBe("image/jpeg");
-    expect(typeof writtenPath).toBe("string");
-    if (typeof writtenPath !== "string") {
-      throw new Error("expected string temp file path");
-    }
-    expect(result.path).toBe(writtenPath);
-    expect(writtenPath).toContain("line-media-");
-    expect(writtenPath).toMatch(/\.jpg$/);
-    expect(writtenPath).not.toContain(messageId);
-    expect(writtenPath).not.toContain("..");
-
-    const tmpRoot = path.resolve(resolvePreferredOpenClawTmpDir());
-    const rel = path.relative(tmpRoot, path.resolve(writtenPath));
-    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    const [bufferArg, contentTypeArg, subdirArg] = saveMediaBufferMock.mock.calls[0];
+    expect(Buffer.isBuffer(bufferArg)).toBe(true);
+    expect(contentTypeArg).toBe("image/jpeg");
+    expect(subdirArg).toBe("inbound");
+    expect(result.path).toBe("/persisted/inbound/media-image/jpeg");
   });
 
-  it("rejects oversized media before writing to disk", async () => {
+  it("rejects oversized media before persisting", async () => {
     getMessageContentMock.mockResolvedValueOnce(chunks([Buffer.alloc(4), Buffer.alloc(4)]));
-    const writeSpy = vi.spyOn(fs.promises, "writeFile").mockResolvedValue(undefined);
 
     await expect(downloadLineMedia("mid", "token", 7)).rejects.toThrow(/Media exceeds/i);
-    expect(writeSpy).not.toHaveBeenCalled();
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
   });
 
   it("classifies M4A ftyp major brand as audio/mp4", async () => {
@@ -87,14 +90,11 @@ describe("downloadLineMedia", () => {
       0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20,
     ]);
     getMessageContentMock.mockResolvedValueOnce(chunks([m4aHeader]));
-    const writeSpy = vi.spyOn(fs.promises, "writeFile").mockResolvedValueOnce(undefined);
 
     const result = await downloadLineMedia("mid-audio", "token");
-    const writtenPath = writeSpy.mock.calls[0]?.[0];
 
     expect(result.contentType).toBe("audio/mp4");
-    expect(result.path).toMatch(/\.m4a$/);
-    expect(writtenPath).toBe(result.path);
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("audio/mp4");
   });
 
   it("detects MP4 video from ftyp major brand (isom)", async () => {
@@ -102,11 +102,10 @@ describe("downloadLineMedia", () => {
       0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d,
     ]);
     getMessageContentMock.mockResolvedValueOnce(chunks([mp4]));
-    vi.spyOn(fs.promises, "writeFile").mockResolvedValueOnce(undefined);
 
     const result = await downloadLineMedia("mid-mp4", "token");
 
     expect(result.contentType).toBe("video/mp4");
-    expect(result.path).toMatch(/\.mp4$/);
+    expect(saveMediaBufferMock.mock.calls[0][1]).toBe("video/mp4");
   });
 });
