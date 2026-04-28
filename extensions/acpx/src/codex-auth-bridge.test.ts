@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareAcpxCodexAuthConfig } from "./codex-auth-bridge.js";
 import { resolveAcpxPluginConfig } from "./config.js";
 
@@ -418,5 +418,74 @@ describe("prepareAcpxCodexAuthConfig", () => {
     });
 
     expect(resolved.agents.claude).toBe(command);
+  });
+
+  // Regression for #73333: filesystems that reject chmod (some NFS/SMB mounts,
+  // hardened cloud storage) used to abort acpx plugin startup with EPERM even
+  // though the wrapper file itself was written successfully. The executable
+  // bit is cosmetic — wrappers run via `node <path>` — so chmod failure must
+  // be best-effort.
+  it.each(["EPERM", "EACCES", "EROFS", "ENOSYS", "ENOTSUP"] as const)(
+    "tolerates fs.chmod failing with %s on the wrapper script (regression #73333)",
+    async (code) => {
+      const root = await makeTempDir();
+      const stateDir = path.join(root, "state");
+      const generated = generatedCodexPaths(stateDir);
+      const generatedClaude = generatedClaudePaths(stateDir);
+
+      const chmodSpy = vi.spyOn(fs, "chmod").mockImplementation(async () => {
+        const error = new Error(`mock ${code} on remote filesystem`) as NodeJS.ErrnoException;
+        error.code = code;
+        throw error;
+      });
+
+      try {
+        const pluginConfig = resolveAcpxPluginConfig({
+          rawConfig: {},
+          workspaceDir: root,
+        });
+        const resolved = await prepareAcpxCodexAuthConfig({
+          pluginConfig,
+          stateDir,
+        });
+
+        expectCodexWrapperCommand(resolved.agents.codex, generated.wrapperPath);
+        expectClaudeWrapperCommand(resolved.agents.claude, generatedClaude.wrapperPath);
+        // Wrapper file content is still written even though chmod is rejected.
+        await expect(fs.access(generated.wrapperPath)).resolves.toBeUndefined();
+        await expect(fs.access(generatedClaude.wrapperPath)).resolves.toBeUndefined();
+        // Both wrappers were chmod-attempted and both swallowed the error.
+        expect(chmodSpy).toHaveBeenCalledWith(generated.wrapperPath, 0o755);
+        expect(chmodSpy).toHaveBeenCalledWith(generatedClaude.wrapperPath, 0o755);
+      } finally {
+        chmodSpy.mockRestore();
+      }
+    },
+  );
+
+  it("still surfaces unexpected fs.chmod errors so real bugs are not hidden (regression #73333)", async () => {
+    const root = await makeTempDir();
+    const stateDir = path.join(root, "state");
+
+    const chmodSpy = vi.spyOn(fs, "chmod").mockImplementation(async () => {
+      const error = new Error("mock ENOSPC out of disk") as NodeJS.ErrnoException;
+      error.code = "ENOSPC";
+      throw error;
+    });
+
+    try {
+      const pluginConfig = resolveAcpxPluginConfig({
+        rawConfig: {},
+        workspaceDir: root,
+      });
+      await expect(
+        prepareAcpxCodexAuthConfig({
+          pluginConfig,
+          stateDir,
+        }),
+      ).rejects.toMatchObject({ code: "ENOSPC" });
+    } finally {
+      chmodSpy.mockRestore();
+    }
   });
 });

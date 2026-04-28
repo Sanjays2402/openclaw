@@ -240,13 +240,44 @@ async function prepareIsolatedCodexHome(baseDir: string): Promise<string> {
   return codexHome;
 }
 
+/**
+ * Best-effort chmod for ACP wrapper scripts.
+ *
+ * Wrappers are always invoked via `node /path/to/wrapper.mjs`, so the executable
+ * bit is purely cosmetic. On filesystems that reject chmod (some NFS/SMB mounts,
+ * hardened cloud storage, read-only-perms volumes), the previous hard failure
+ * here aborted acpx plugin startup with EPERM even though the wrapper itself
+ * was already written successfully (issue #73333). Treat permission-related
+ * failures as non-fatal and keep going; surface other unexpected errors so we
+ * still notice real bugs.
+ */
+async function chmodWrapperBestEffort(wrapperPath: string): Promise<void> {
+  try {
+    await fs.chmod(wrapperPath, 0o755);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (
+      code === "EPERM" ||
+      code === "EACCES" ||
+      code === "EROFS" ||
+      code === "ENOSYS" ||
+      code === "ENOTSUP"
+    ) {
+      // Filesystem refuses chmod (remote/special FS). Wrapper is invoked via
+      // `node <path>`, so the missing executable bit is harmless.
+      return;
+    }
+    throw error;
+  }
+}
+
 async function writeCodexAcpWrapper(baseDir: string, installedBinPath?: string): Promise<string> {
   await fs.mkdir(baseDir, { recursive: true });
   const wrapperPath = path.join(baseDir, "codex-acp-wrapper.mjs");
   await fs.writeFile(wrapperPath, buildCodexAcpWrapperScript(installedBinPath), {
     encoding: "utf8",
   });
-  await fs.chmod(wrapperPath, 0o755);
+  await chmodWrapperBestEffort(wrapperPath);
   return wrapperPath;
 }
 
@@ -256,7 +287,7 @@ async function writeClaudeAcpWrapper(baseDir: string, installedBinPath?: string)
   await fs.writeFile(wrapperPath, buildClaudeAcpWrapperScript(installedBinPath), {
     encoding: "utf8",
   });
-  await fs.chmod(wrapperPath, 0o755);
+  await chmodWrapperBestEffort(wrapperPath);
   return wrapperPath;
 }
 
