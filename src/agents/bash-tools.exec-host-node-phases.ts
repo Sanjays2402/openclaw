@@ -78,7 +78,7 @@ export function formatNodeRunToolResult(params: {
     content: [
       {
         type: "text",
-        text: stdout || stderr || errorText || "",
+        text: stdout || stderr || errorText || "(no output)",
       },
     ],
     details: {

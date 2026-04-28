@@ -626,7 +626,7 @@ export async function runExecProcess(opts: {
     // signal (Layer 2) — both of which prevent this call from ever being
     // reached after the agent run has ended.
     opts.onUpdate({
-      content: [{ type: "text", text: warningText + (tailText || "") }],
+      content: [{ type: "text", text: warningText + (tailText || "(no output)") }],
       details: {
         status: "running",
         sessionId,
