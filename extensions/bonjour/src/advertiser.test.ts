@@ -727,6 +727,65 @@ describe("gateway bonjour advertiser", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it("disables bonjour when the advertiser flaps within a sliding window even if it briefly announces between restarts (#74209)", async () => {
+    enableAdvertiserUnitMode();
+    vi.useFakeTimers();
+
+    // Simulate the user-reported pattern: the service repeatedly enters
+    // probing, briefly hits announced (resetting `consecutiveRestarts`),
+    // then slides back into probing — for example, a duplicate-name
+    // conflict on the LAN. Without the sliding-window cap, the watchdog
+    // would churn forever (#74209).
+    const stateRef = { value: "announced" };
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const advertise = vi.fn().mockResolvedValue(undefined);
+    mockCiaoService({ advertise, destroy, stateRef });
+
+    const started = await startAdvertiser({
+      gatewayPort: 18789,
+      sshPort: 2222,
+    });
+
+    // Drive the watchdog through repeated flap cycles. Each cycle:
+    //   1. State is "announced" — watchdog observes it and resets
+    //      `consecutiveRestarts` to 0.
+    //   2. State is forced to "probing" for >STUCK_ANNOUNCING_MS
+    //      so the watchdog calls `recreateAdvertiser`.
+    //   3. After the restart, the test heals state back to "announced"
+    //      to mimic a duplicate-name conflict that briefly resolves.
+    // Without the sliding-window cap this loop would never end; with
+    // it, the disable log fires once we exceed MAX_RESTARTS_IN_WINDOW.
+    for (let cycle = 0; cycle < 12; cycle += 1) {
+      // Watchdog observes announced → consecutiveRestarts = 0.
+      stateRef.value = "announced";
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Stuck in probing long enough to trip STUCK_ANNOUNCING_MS.
+      stateRef.value = "probing";
+      await vi.advanceTimersByTimeAsync(25_000);
+      if (
+        (logger.warn.mock.calls as unknown[][]).some(
+          (call) => typeof call[0] === "string" && call[0].includes("disabling advertiser after"),
+        )
+      ) {
+        break;
+      }
+    }
+    const disableLog = (logger.warn.mock.calls as unknown[][]).find(
+      (call) => typeof call[0] === "string" && call[0].includes("disabling advertiser after"),
+    );
+    expect(disableLog).toBeDefined();
+    expect(String(disableLog?.[0])).toMatch(/restarts within \d+ minutes/);
+
+    // After being disabled, no further advertise/createService work happens.
+    const advertiseCallsAtDisable = advertise.mock.calls.length;
+    const createServiceCallsAtDisable = createService.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(advertise.mock.calls.length).toBe(advertiseCallsAtDisable);
+    expect(createService.mock.calls.length).toBe(createServiceCallsAtDisable);
+
+    await started.stop();
+  });
+
   it("normalizes hostnames with domains for service names", async () => {
     // Allow advertiser to run in unit tests.
     delete process.env.VITEST;

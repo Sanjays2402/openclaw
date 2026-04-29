@@ -88,6 +88,15 @@ const REPAIR_DEBOUNCE_MS = 30_000;
 // See https://github.com/openclaw/openclaw/issues/72481
 const STUCK_ANNOUNCING_MS = 20_000;
 const MAX_CONSECUTIVE_RESTARTS = 3;
+// Sliding-window absolute cap: an advertiser that flaps between probing and
+// briefly-announced (e.g. a duplicate-name conflict on the LAN) can reset the
+// `consecutiveRestarts` counter every time it momentarily hits "announced",
+// so the consecutive cap never fires and the watchdog churns indefinitely
+// (see https://github.com/openclaw/openclaw/issues/74209). Bound the total
+// number of restarts that can happen within a rolling window so unhealthy
+// hosts disable mDNS instead of rewriting the journal forever.
+const RESTART_WINDOW_MS = 30 * 60_000;
+const MAX_RESTARTS_IN_WINDOW = 5;
 const BONJOUR_ANNOUNCED_STATE = "announced";
 const CIAO_SELF_PROBE_RETRY_FRAGMENT =
   "failed probing with reason: Error: Can't probe for a service which is announced already.";
@@ -563,6 +572,7 @@ export async function startGatewayBonjourAdvertiser(
     let recreatePromise: Promise<void> | null = null;
     let disabled = false;
     let consecutiveRestarts = 0;
+    const restartTimestamps: number[] = [];
     let cycle: BonjourCycle | null = createCycle();
     const stateTracker = new Map<string, ServiceStateTracker>();
 
@@ -590,10 +600,25 @@ export async function startGatewayBonjourAdvertiser(
       }
       recreatePromise = (async () => {
         consecutiveRestarts += 1;
-        if (consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
+        const now = Date.now();
+        while (
+          restartTimestamps.length > 0 &&
+          now - (restartTimestamps[0] ?? 0) > RESTART_WINDOW_MS
+        ) {
+          restartTimestamps.shift();
+        }
+        restartTimestamps.push(now);
+        const tooManyConsecutive = consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS;
+        const tooManyInWindow = restartTimestamps.length > MAX_RESTARTS_IN_WINDOW;
+        if (tooManyConsecutive || tooManyInWindow) {
           disabled = true;
+          const detail = tooManyConsecutive
+            ? `${MAX_CONSECUTIVE_RESTARTS} failed restarts`
+            : `${MAX_RESTARTS_IN_WINDOW} restarts within ${Math.round(
+                RESTART_WINDOW_MS / 60_000,
+              )} minutes`;
           logger.warn(
-            `bonjour: disabling advertiser after ${MAX_CONSECUTIVE_RESTARTS} failed restarts (${reason}); set discovery.mdns.mode="off" or OPENCLAW_DISABLE_BONJOUR=1 to disable mDNS discovery`,
+            `bonjour: disabling advertiser after ${detail} (${reason}); set discovery.mdns.mode="off" or OPENCLAW_DISABLE_BONJOUR=1 to disable mDNS discovery`,
           );
           const previous = cycle;
           cycle = null;
