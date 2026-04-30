@@ -290,6 +290,7 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
   // initialization during test bootstrap cannot trip TDZ reads.
   const providerId = "amazon-bedrock";
   const claude46ModelRe = /claude-(?:opus|sonnet)-4(?:\.|-)6(?:$|[-.])/i;
+  const claudeOpus47ModelRe = /claude-opus-4(?:\.|-)7(?:$|[-.:])/i;
   // Match region from bedrock-runtime (Converse API) URLs.
   // e.g. https://bedrock-runtime.us-east-1.amazonaws.com
   const bedrockRegionRe = /bedrock-runtime\.([a-z0-9-]+)\.amazonaws\./;
@@ -521,16 +522,22 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
       }
       return undefined;
     },
-    resolveThinkingProfile: ({ modelId }) => ({
-      levels: [
-        { id: "off" },
-        { id: "minimal" },
-        { id: "low" },
-        { id: "medium" },
-        { id: "high" },
-        ...(claude46ModelRe.test(modelId.trim()) ? [{ id: "adaptive" as const }] : []),
-      ],
-      defaultLevel: claude46ModelRe.test(modelId.trim()) ? "adaptive" : undefined,
-    }),
+    resolveThinkingProfile: ({ modelId }) => {
+      const trimmed = modelId.trim();
+      const isOpus47 = claudeOpus47ModelRe.test(trimmed);
+      const isClaude46 = claude46ModelRe.test(trimmed);
+      return {
+        levels: [
+          { id: "off" },
+          { id: "minimal" },
+          { id: "low" },
+          { id: "medium" },
+          { id: "high" },
+          ...(isOpus47 ? [{ id: "xhigh" as const }] : []),
+          ...(isOpus47 || isClaude46 ? [{ id: "adaptive" as const }] : []),
+        ],
+        defaultLevel: isClaude46 ? "adaptive" : undefined,
+      };
+    },
   });
 }

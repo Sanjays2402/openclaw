@@ -253,6 +253,27 @@ describe("amazon-bedrock provider plugin", () => {
     });
   });
 
+  it("includes xhigh and adaptive for Claude Opus 4.7 Bedrock models", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+
+    for (const modelId of [
+      "us.anthropic.claude-opus-4-7",
+      "us.anthropic.claude-opus-4.7-v1:0",
+      "eu.anthropic.claude-opus-4-7",
+      "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-opus-4-7",
+    ]) {
+      const profile = provider.resolveThinkingProfile?.({
+        provider: "amazon-bedrock",
+        modelId,
+      } as never);
+      expect(profile).toMatchObject({
+        levels: expect.arrayContaining([{ id: "xhigh" }, { id: "adaptive" }]),
+      });
+      // Opus 4.7 should not auto-default to adaptive (matches native anthropic behavior).
+      expect(profile?.defaultLevel).toBeUndefined();
+    }
+  });
+
   it("owns Anthropic-style replay policy for Claude Bedrock models", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
 
