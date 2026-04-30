@@ -497,6 +497,28 @@ describe("handleFeishuMessage ACP routing", () => {
     expect(mockTouchBinding).toHaveBeenCalledWith("default:oc_group_chat:topic:om_topic_root");
   });
 
+  it("skips empty text messages without invoking the agent route resolver", async () => {
+    await dispatchMessage({
+      cfg: {
+        session: { mainKey: "main", scope: "per-sender" },
+        channels: { feishu: { enabled: true, allowFrom: ["ou_sender_1"], dmPolicy: "open" } },
+      },
+      event: {
+        sender: { sender_id: { open_id: "ou_sender_1" } },
+        message: {
+          message_id: "msg-empty",
+          chat_id: "oc_dm",
+          chat_type: "p2p",
+          message_type: "text",
+          content: JSON.stringify({ text: "" }),
+        },
+      },
+    });
+
+    expect(mockResolveAgentRoute).not.toHaveBeenCalled();
+    expect(mockSendMessageFeishu).not.toHaveBeenCalled();
+  });
+
   it("passes reasoning preview permission from session state into the dispatcher", async () => {
     mockResolveFeishuReasoningPreviewEnabled.mockReturnValue(true);
 

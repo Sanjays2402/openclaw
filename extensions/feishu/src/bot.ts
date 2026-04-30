@@ -422,6 +422,17 @@ export async function handleFeishuMessage(params: {
   }
 
   let ctx = parseFeishuMessageEvent(event, botOpenId, botName);
+
+  // Skip empty text messages (no content, no media possible). Without this guard
+  // the empty string flows into the session/transcript and downstream LLM
+  // requests reject the message list as empty (see issue #74634).
+  if (event.message.message_type === "text" && !ctx.content.trim()) {
+    log(
+      `feishu[${account.accountId}]: skipping empty text message ${messageId} from ${ctx.senderOpenId}`,
+    );
+    return;
+  }
+
   const isGroup = isFeishuGroupChatType(ctx.chatType);
   const isDirect = !isGroup;
   const senderUserId = normalizeOptionalString(event.sender.sender_id.user_id);
