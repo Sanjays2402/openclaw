@@ -509,6 +509,77 @@ describe("connectGateway", () => {
     expect(host.hasEverConnected).toBe(true);
   });
 
+  it.each([
+    "gateway auth changed",
+    "gateway auth rotated",
+    "gateway auth revoked",
+    "shared auth changed",
+    "device removed",
+    "device revoked",
+    "session revoked",
+    "pairing revoked",
+  ])(
+    "clears hasEverConnected on code:4001 revocation reason %j with no error payload",
+    (reason) => {
+      // Server-initiated shared-auth rotation, device removal, and session
+      // revocation closes use code 4001 + reason text. The browser client
+      // forwards only `code` + `reason` for post-hello closes (`error` is
+      // populated only from the pending connect error), so without
+      // classifying the code/reason directly the sticky chat UI would
+      // survive explicit revocation. Codex review on #72522.
+      const host = createHost();
+
+      connectGateway(host);
+      const client = gatewayClientInstances[0];
+      client.emitHello();
+      expect(host.hasEverConnected).toBe(true);
+
+      client.emitClose({ code: 4001, reason, error: undefined });
+      expect(host.connected).toBe(false);
+      expect(host.hasEverConnected).toBe(false);
+    },
+  );
+
+  it("keeps hasEverConnected on code:4001 with non-revocation reason and no error payload", () => {
+    // Defensive: only the explicit revocation reason allowlist should drop
+    // the sticky flag. A generic 4001 close (e.g. policy violation that is
+    // not actually a credential rotation) must not be misclassified.
+    const host = createHost();
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    client.emitHello();
+    expect(host.hasEverConnected).toBe(true);
+
+    client.emitClose({
+      code: 4001,
+      reason: "policy violation",
+      error: undefined,
+    });
+    expect(host.connected).toBe(false);
+    expect(host.hasEverConnected).toBe(true);
+  });
+
+  it("keeps hasEverConnected on non-4001 close even if reason mentions revocation", () => {
+    // Defensive: the reason allowlist only matters when paired with the
+    // canonical 4001 revocation code. A 1006 transient close that happens
+    // to embed the substring must stay sticky.
+    const host = createHost();
+
+    connectGateway(host);
+    const client = gatewayClientInstances[0];
+    client.emitHello();
+    expect(host.hasEverConnected).toBe(true);
+
+    client.emitClose({
+      code: 1006,
+      reason: "transient: device removed retry",
+      error: undefined,
+    });
+    expect(host.connected).toBe(false);
+    expect(host.hasEverConnected).toBe(true);
+  });
+
   it("preserves pending approval requests across reconnect", () => {
     const host = createHost();
     host.execApprovalQueue = [

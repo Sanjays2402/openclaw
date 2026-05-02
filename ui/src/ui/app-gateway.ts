@@ -104,6 +104,46 @@ const AUTH_FAILURE_DETAIL_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Reason substrings on `code: 4001` close frames that indicate explicit
+ * server-initiated auth/identity revocation, even when the WebSocket close
+ * carries no structured error payload (e.g. shared-auth rotation closes
+ * shared-auth sockets with reason `gateway auth changed`, device removal
+ * closes with reason `device removed`, and session revocation closes use
+ * `session revoked` / `gateway auth revoked`). The browser client only
+ * forwards `code` + `reason` for these post-hello closes (`error` is set only
+ * for the pending connect error), so the sticky `hasEverConnected` reset has
+ * to look at the close code/reason directly.
+ *
+ * Match on lowercased substrings so reason text variants stay covered
+ * without forcing the gateway to ship structured detail codes for closes
+ * that already use `4001` + reason as the canonical revocation signal.
+ */
+const AUTH_REVOCATION_CLOSE_CODE = 4001;
+const AUTH_REVOCATION_REASON_SUBSTRINGS = [
+  "gateway auth changed",
+  "gateway auth rotated",
+  "gateway auth revoked",
+  "shared auth changed",
+  "shared auth rotated",
+  "shared auth revoked",
+  "device removed",
+  "device revoked",
+  "session revoked",
+  "pairing revoked",
+];
+
+export function isAuthRevocationClose(close: { code?: number; reason?: string }): boolean {
+  if (close.code !== AUTH_REVOCATION_CLOSE_CODE) {
+    return false;
+  }
+  const reason = (close.reason ?? "").toLowerCase();
+  if (!reason) {
+    return false;
+  }
+  return AUTH_REVOCATION_REASON_SUBSTRINGS.some((needle) => reason.includes(needle));
+}
+
+/**
  * Returns true when a gateway close detail code indicates an explicit
  * auth/identity failure that should force the credentials gate to reappear.
  * Pure transport disconnects (network blip, server restart, tab focus) and
@@ -534,8 +574,19 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
         (typeof error?.code === "string" ? error.code : null);
       // If the close looks like an explicit auth/identity failure, drop the
       // sticky hasEverConnected flag so the renderer falls back to the full
-      // credentials gate instead of holding the stale chat UI in place.
+      // credentials gate instead of holding the stale chat UI in place. This
+      // covers two distinct shapes:
+      //   1. Structured error payloads on the connect path (lastErrorCode set
+      //      from resolveGatewayErrorDetailCode) — the original allowlist.
+      //   2. Server-initiated `code: 4001` closes where the browser client
+      //      forwards only `code` + `reason` (no structured error). Shared-auth
+      //      rotation, device removal, and session revocation all use this
+      //      shape, so cached Control UI content would otherwise survive
+      //      explicit revocation until the next reconnect outcome (P2 codex
+      //      finding on #72522).
       if (host.lastErrorCode && isAuthFailureDetailCode(host.lastErrorCode)) {
+        host.hasEverConnected = false;
+      } else if (isAuthRevocationClose({ code, reason })) {
         host.hasEverConnected = false;
       }
       if (code !== 1012) {
