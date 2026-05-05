@@ -63,6 +63,7 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Channels/login: clarify the gateway error when `openclaw channels login <name>` is run for a channel that is missing from openclaw.json or unrecognized, instead of returning the opaque 'invalid channels.start channel' message. ([#77508](https://github.com/openclaw/openclaw/issues/77508))
 - WhatsApp/onboarding: canonicalize setup and pairing allowlist entries to WhatsApp's digit-only phone ids while still accepting E.164, JID, and `whatsapp:` inputs, so personal-phone allowlists match WhatsApp Web sender ids after setup. Thanks @vincentkoc.
 - Gateway/startup: load provider plugins that own explicitly configured image, video, or music generation defaults so generation tools become live after gateway restart instead of remaining catalog-only. Fixes #77244. Thanks @buyuangtampan, @Nikoxx99, and @vincentkoc.
 - Slack/subagents: keep resumed parent `message.send` calls in the originating Slack thread when ambient session thread context is present, and suppress successful silent child completion rows from follow-up findings. Thanks @bek91.
