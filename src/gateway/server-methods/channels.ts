@@ -395,10 +395,15 @@ export const channelsHandlers: GatewayRequestHandlers = {
     const rawChannel = (params as { channel?: unknown }).channel;
     const channelId = typeof rawChannel === "string" ? normalizeChannelId(rawChannel) : null;
     if (!channelId) {
+      const channelLabel =
+        typeof rawChannel === "string" && rawChannel.trim() ? rawChannel.trim() : "<unknown>";
       respond(
         false,
         undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "invalid channels.start channel"),
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `channel ${channelLabel} is not enabled in openclaw.json; add a channels.${channelLabel} block (with enabled: true) and restart the gateway`,
+        ),
       );
       return;
     }
