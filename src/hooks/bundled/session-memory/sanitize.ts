@@ -22,10 +22,14 @@ const CHAT_TEMPLATE_TOKENS =
 
 /**
  * Raw `<tool_call>...</tool_call>` XML blocks that leaked into the content
- * channel before the parser converted them. Non-greedy so multiple blocks on
- * the same line are handled independently.
+ * channel before the parser converted them. The first alternative is
+ * non-greedy so multiple closed blocks on the same line are handled
+ * independently. The second alternative covers mid-stream-truncated blocks
+ * that lost their closing tag (e.g. a stream cut after `<tool_call>\n<function=...>`),
+ * which would otherwise be persisted verbatim and re-injected as scaffolding
+ * on the next /new.
  */
-const TOOL_CALL_XML = /<tool_call>[\s\S]*?<\/tool_call>/g;
+const TOOL_CALL_XML = /<tool_call>(?:[\s\S]*?<\/tool_call>|[\s\S]*$)/g;
 
 /**
  * Lines that are nothing but a bare role label — either `role:` with optional
@@ -59,17 +63,22 @@ export interface SanitizeResult {
 export function sanitizeAssistantContent(raw: string): SanitizeResult {
   const originalLength = raw.length;
 
-  let cleaned = raw
+  // Phase 1: strip the structural artifacts (tokens, tool_call XML, orphan
+  // role lines). The ratio is measured against this intermediate length so
+  // it reflects only meaningful removals, not cosmetic blank-line collapse
+  // or trailing whitespace trim from phase 2.
+  const stripped = raw
     .replace(CHAT_TEMPLATE_TOKENS, "")
     .replace(TOOL_CALL_XML, "")
-    .replace(ORPHAN_ROLE_LINE, "")
-    .replace(EXCESS_BLANK_LINES, "\n\n");
+    .replace(ORPHAN_ROLE_LINE, "");
 
-  // Trim leading/trailing whitespace introduced by the stripping above,
-  // but preserve internal newlines.
+  // Phase 2: cosmetic cleanup — collapse 3+ blank lines to 2 and trim outer
+  // whitespace. These changes are not counted in `strippedRatio`.
+  let cleaned = stripped.replace(EXCESS_BLANK_LINES, "\n\n");
   cleaned = cleaned.replace(/^\s+|\s+$/g, "");
 
-  const strippedRatio = originalLength === 0 ? 0 : (originalLength - cleaned.length) / originalLength;
+  const strippedRatio =
+    originalLength === 0 ? 0 : (originalLength - stripped.length) / originalLength;
 
   let skipped = false;
   const trimmed = cleaned.trim();

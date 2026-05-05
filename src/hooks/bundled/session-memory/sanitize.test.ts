@@ -49,6 +49,45 @@ describe("sanitizeAssistantContent", () => {
     expect(twoResult.text).toBe("pre  mid  post");
   });
 
+  it("strips an unclosed <tool_call> block that lost its closing tag mid-stream", () => {
+    // Mid-stream truncation: the model started emitting a tool_call but the
+    // stream cut before `</tool_call>`. Without the unclosed-block branch in
+    // the regex, the fragment used to be persisted verbatim and re-injected
+    // as scaffolding on the next /new.
+    const input = [
+      "This was a substantive response that should be preserved well above the short-turn elision threshold.",
+      "<tool_call>",
+      "<function=foo>",
+      "<parameter=bar>",
+      "baz",
+    ].join("\n");
+    const result = sanitizeAssistantContent(input);
+    expect(result.text).not.toContain("<tool_call>");
+    expect(result.text).not.toContain("<function=foo>");
+    expect(result.text).not.toContain("<parameter=bar>");
+    expect(result.text).toContain("substantive response");
+    expect(result.skipped).toBe(false);
+  });
+
+  it("strips an unclosed <tool_call> with no preceding content (whole turn is the fragment)", () => {
+    const input = "<tool_call>\n<function=foo>\n";
+    const result = sanitizeAssistantContent(input);
+    expect(result.text).toBe("");
+    expect(result.skipped).toBe(true);
+  });
+
+  it("prefers the closing tag over the open-ended branch when both are available", () => {
+    // First non-greedy alternative must win so trailing legit content after
+    // a properly-closed block is preserved instead of being eaten by the
+    // open-ended fallback.
+    const input =
+      "<tool_call><function=a></function></tool_call>This trailing prose has plenty of substance to remain after sanitization, well past the short-turn threshold.";
+    const result = sanitizeAssistantContent(input);
+    expect(result.text).toContain("trailing prose");
+    expect(result.text).not.toContain("<tool_call>");
+    expect(result.text).not.toContain("<function=a>");
+  });
+
   it("strips orphaned role-label-only lines", () => {
     const input = ["This is a real reply.", "assistant:", "user", "system: ", "Another line."].join(
       "\n",
@@ -98,6 +137,20 @@ describe("sanitizeAssistantContent", () => {
     expect(result.text).not.toContain("<|im_end|>");
     expect(result.text.length).toBeGreaterThan(1000);
     expect(result.text).toContain("thoughtful paragraph");
+  });
+
+  it("strippedRatio is not inflated by blank-line collapse or trim", () => {
+    // The body is wrapped in leading/trailing whitespace and contains a run
+    // of blank lines. Phase 2 (blank-line collapse + trim) shrinks the
+    // string further, but the ratio is measured against the post-token-strip
+    // intermediate length, not the final cleaned length, so a clean payload
+    // surrounded by cosmetic whitespace must report a 0 ratio.
+    const body = "This is a perfectly legitimate paragraph of content.";
+    const input = `\n\n\n\n${body}\n\n\n\n`;
+    const result = sanitizeAssistantContent(input);
+    expect(result.text).toBe(body);
+    expect(result.strippedRatio).toBe(0);
+    expect(result.skipped).toBe(false);
   });
 
   it("is a no-op on clean markdown content", () => {
