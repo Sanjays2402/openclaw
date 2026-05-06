@@ -40,20 +40,23 @@ describe("resolveAuthProfileFailureReason", () => {
     ).toBeNull();
   });
 
-  it("does not persist session-local format failures as auth-profile health", () => {
-    // `format` failures come from request-shape problems (malformed transcript,
-    // empty messages array, schema mismatch). They are session-local and must
-    // not put the shared provider profile into cooldown — unrelated sessions
-    // would be skipped from the profile (#76829).
+  it("does not persist request-shape (format) rejections as auth-profile health (#76829, #77228)", () => {
+    // A format rejection (e.g. malformed transcript, empty messages array,
+    // schema mismatch, or the github-copilot prefill-strict 400
+    // "conversation must end with a user message" reported in #77228) is
+    // a per-session transcript-shape problem. Cascading it to a profile
+    // cooldown would block every other healthy session sharing the same
+    // auth profile and can take down the whole provider for the backoff
+    // window — see #76829.
     expect(
       resolveAuthProfileFailureReason({
         failoverReason: "format",
-        policy: "shared",
       }),
     ).toBeNull();
     expect(
       resolveAuthProfileFailureReason({
         failoverReason: "format",
+        policy: "shared",
       }),
     ).toBeNull();
   });
