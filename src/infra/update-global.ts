@@ -545,6 +545,37 @@ export async function resolveGlobalPackageRoot(
   return path.join(root, PRIMARY_PACKAGE_NAME);
 }
 
+function deriveGlobalRootFromPackageRoot(pkgRoot?: string | null): string | null {
+  const trimmed = pkgRoot?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = path.resolve(trimmed);
+  const nodeModulesDir = path.dirname(normalized);
+  if (path.basename(nodeModulesDir) !== "node_modules") {
+    return null;
+  }
+  return nodeModulesDir;
+}
+
+async function pkgRootIsInsideGlobalRoot(
+  pkgRoot: string | null | undefined,
+  globalRoot: string | null | undefined,
+): Promise<boolean> {
+  if (!pkgRoot || !globalRoot) {
+    return false;
+  }
+  const pkgReal = await tryRealpath(pkgRoot);
+  const globalReal = await tryRealpath(globalRoot);
+  const pkgResolved = path.resolve(pkgReal);
+  const globalResolved = path.resolve(globalReal);
+  if (pkgResolved === globalResolved) {
+    return true;
+  }
+  const rel = path.relative(globalResolved, pkgResolved);
+  return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 export async function resolveGlobalInstallTarget(params: {
   manager: GlobalInstallManager | ResolvedGlobalInstallCommand;
   runCommand: CommandRunner;
@@ -552,12 +583,25 @@ export async function resolveGlobalInstallTarget(params: {
   pkgRoot?: string | null;
 }): Promise<ResolvedGlobalInstallTarget> {
   const command = normalizeGlobalInstallCommand(params.manager, params.pkgRoot);
-  const globalRoot = await resolveGlobalRoot(
+  // Prefer the npm prefix that actually owns the running OpenClaw package,
+  // not whatever `npm root -g` returns from the gateway's PATH. On nvm-only
+  // setups, gateway processes can resolve a system `/usr/local` npm whose
+  // global root is unwritable, so the staged install fails with EACCES even
+  // though the live install lives under `~/.nvm/.../lib/node_modules`. See
+  // openclaw/openclaw#78775 (and the original Homebrew variant in #60150).
+  const inferredGlobalRoot = deriveGlobalRootFromPackageRoot(params.pkgRoot);
+  const inferredOwnsPackage = await pkgRootIsInsideGlobalRoot(params.pkgRoot, inferredGlobalRoot);
+  const reportedGlobalRoot = await resolveGlobalRoot(
     command,
     params.runCommand,
     params.timeoutMs,
     params.pkgRoot,
   );
+  const reportedOwnsPackage = await pkgRootIsInsideGlobalRoot(params.pkgRoot, reportedGlobalRoot);
+  const globalRoot =
+    inferredOwnsPackage && !reportedOwnsPackage
+      ? inferredGlobalRoot
+      : (reportedGlobalRoot ?? (inferredOwnsPackage ? inferredGlobalRoot : null));
   return {
     ...command,
     globalRoot,

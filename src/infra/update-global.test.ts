@@ -290,6 +290,59 @@ describe("update global helpers", () => {
     });
   });
 
+  it("prefers the owning npm prefix when PATH npm reports a non-owning global root (nvm scenario, #78775)", async () => {
+    // Reproduces the nvm-only setup where `gateway update.run` resolves a
+    // system `/usr/local` npm via PATH, but the running OpenClaw actually
+    // lives under `~/.nvm/versions/node/<v>/lib/node_modules/openclaw`. The
+    // resolved install target must point at the nvm prefix that owns the
+    // package, not the unwritable `/usr/local` global root.
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    try {
+      await withTempDir({ prefix: "openclaw-update-nvm-prefix-" }, async (base) => {
+        const nvmPrefix = path.join(base, "nvm", "versions", "node", "v22.17.0");
+        const nvmBin = path.join(nvmPrefix, "bin");
+        const nvmRoot = path.join(nvmPrefix, "lib", "node_modules");
+        const pkgRoot = path.join(nvmRoot, "openclaw");
+        const nvmNpm = path.join(nvmBin, "npm");
+        // The PATH-resolved npm reports an unrelated /usr/local global root.
+        const systemRoot = path.join(base, "usr", "local", "lib", "node_modules");
+        await fs.mkdir(pkgRoot, { recursive: true });
+        await fs.mkdir(systemRoot, { recursive: true });
+        await fs.mkdir(nvmBin, { recursive: true });
+        await fs.writeFile(nvmNpm, "", "utf8");
+
+        const runCommand = createNpmRootRunner({
+          defaultNpmRoot: systemRoot,
+          overrideCommand: nvmNpm,
+          overrideNpmRoot: nvmRoot,
+        });
+
+        // detectGlobalInstallManagerForRoot is happy because the owning npm
+        // (under the nvm prefix) reports the matching globalRoot.
+        await expect(detectGlobalInstallManagerForRoot(runCommand, pkgRoot, 1000)).resolves.toBe(
+          "npm",
+        );
+        // The resolved install target prefers the nvm globalRoot that owns the
+        // package, even though the PATH npm reports /usr/local.
+        await expect(
+          resolveGlobalInstallTarget({
+            manager: "npm",
+            runCommand,
+            timeoutMs: 1000,
+            pkgRoot,
+          }),
+        ).resolves.toEqual({
+          manager: "npm",
+          command: nvmNpm,
+          globalRoot: nvmRoot,
+          packageRoot: pkgRoot,
+        });
+      });
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it("prefers the owning npm prefix when PATH npm points at a different global root", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     try {
