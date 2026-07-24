@@ -22,6 +22,38 @@ import {
   unwrapShellWrapper,
 } from "./tool-display-exec-shell.js";
 
+// Longest pattern we will echo verbatim into a `search "..."` label. Beyond
+// this the quoted pattern stops being a concise summary and starts being a
+// wall of text in the tool display.
+const MAX_DISPLAYED_SEARCH_PATTERN = 60;
+
+// Text that means the pattern is already presentation output rather than a
+// plain search term. Echoing it produces the nested `search "...search ..." in
+// ...` labels reported in #113401.
+const PRESENTED_PATTERN_MARKERS = ["search ", "bash failed:", "run command"];
+
+/**
+ * Whether an extracted grep/rg pattern is safe to echo verbatim into a
+ * `search "<pattern>"` label.
+ *
+ * Display-only guard: execution is untouched. A pattern that already looks like
+ * summarizer output, spans lines, or is simply too long falls back to the
+ * neutral `search text` label instead of being re-wrapped.
+ */
+function isDisplayablePattern(pattern: string): boolean {
+  if (pattern.length > MAX_DISPLAYED_SEARCH_PATTERN) {
+    return false;
+  }
+  if (/[\n\r`]/.test(pattern)) {
+    return false;
+  }
+  const normalized = pattern.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return !PRESENTED_PATTERN_MARKERS.some((marker) => normalized.startsWith(marker));
+}
+
 function summarizeKnownExec(words: string[]): string {
   if (words.length === 0) {
     return "run command";
@@ -117,10 +149,10 @@ function summarizeKnownExec(words: string[]): string {
     ]);
     const pattern = optionValue(words, ["-e", "--regexp"]) ?? positional[0];
     const target = positional.length > 1 ? positional.at(-1) : undefined;
-    if (pattern) {
+    if (pattern && isDisplayablePattern(pattern)) {
       return target ? `search "${pattern}" in ${target}` : `search "${pattern}"`;
     }
-    return "search text";
+    return target ? `search text in ${target}` : "search text";
   }
 
   if (bin === "find") {

@@ -906,3 +906,45 @@ describe("coerceDisplayValue middle truncation", () => {
     expect(detail).toContain("AKIDAB…7890");
   });
 });
+
+describe("search summary pattern guard (#113401)", () => {
+  it("keeps ordinary grep patterns verbatim", () => {
+    expect(resolveExecDetail({ command: 'grep "needle" src/app.ts' })).toContain(
+      'search "needle" in src/app.ts',
+    );
+  });
+
+  it("keeps ordinary rg patterns verbatim without a target", () => {
+    expect(resolveExecDetail({ command: 'rg "TODO"' })).toContain('search "TODO"');
+  });
+
+  it("does not re-wrap a pattern that is already summarizer output", () => {
+    const detail = resolveExecDetail({ command: 'rg "search \\"foo\\" in bar" src' }) ?? "";
+    const label = detail.split(" \u00b7 ")[0] ?? "";
+    expect(label).toBe("search text in src");
+  });
+
+  it("does not re-wrap a pattern carrying a failure prefix", () => {
+    const detail = resolveExecDetail({ command: 'grep "Bash failed: boom" src' }) ?? "";
+    const label = detail.split(" \u00b7 ")[0] ?? "";
+    expect(label).toBe("search text in src");
+  });
+
+  it("falls back for very long patterns", () => {
+    const detail = resolveExecDetail({ command: `rg "${"x".repeat(120)}" src` }) ?? "";
+    const label = detail.split(" \u00b7 ")[0] ?? "";
+    expect(label).toBe("search text in src");
+  });
+
+  it("falls back for patterns containing backticks", () => {
+    const detail = resolveExecDetail({ command: 'rg "`whoami`" src' }) ?? "";
+    const label = detail.split(" \u00b7 ")[0] ?? "";
+    expect(label).toBe("search text in src");
+  });
+
+  it("keeps the target in the neutral fallback label", () => {
+    const detail = resolveExecDetail({ command: 'grep "search foo" lib/util.ts' }) ?? "";
+    const label = detail.split(" \u00b7 ")[0] ?? "";
+    expect(label).toBe("search text in lib/util.ts");
+  });
+});
