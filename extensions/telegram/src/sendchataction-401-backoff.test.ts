@@ -125,12 +125,31 @@ describe("createTelegramSendChatActionHandler", () => {
 
     expect(handler.isSuspended()).toBe(true);
     expect(logger.mock.calls.at(-1)).toEqual([
-      "CRITICAL: sendChatAction suspended after 3 consecutive 401 errors. Bot token is likely invalid. Telegram may DELETE the bot if requests continue. Replace the token and restart: openclaw channels restart telegram",
+      "CRITICAL: sendChatAction suspended after 3 consecutive 401 errors. Bot token is likely invalid. Telegram may DELETE the bot if requests continue. Replace the token with `openclaw channels add --channel telegram --token <token>`, then restart the gateway with `openclaw gateway restart`.",
     ]);
 
     // Subsequent calls are silently skipped
     await handler.sendChatAction(123, "typing");
     expect(fn).toHaveBeenCalledTimes(3); // not called again
+  });
+
+  it("suspension guidance does not point at a non-existent CLI subcommand", async () => {
+    const fn = vi.fn().mockRejectedValue(make401Error());
+    const logger = vi.fn();
+    const handler = createTelegramSendChatActionHandler({
+      sendChatActionFn: fn,
+      logger,
+      maxConsecutive401: 1,
+    });
+
+    await expect(handler.sendChatAction(123, "typing")).rejects.toThrow("401");
+
+    const critical = String(logger.mock.calls.at(-1)?.[0] ?? "");
+    expect(critical).toContain("CRITICAL");
+    // `openclaw channels` has no `restart` subcommand; recovery must name real commands.
+    expect(critical).not.toContain("channels restart");
+    expect(critical).toContain("openclaw channels add --channel telegram --token <token>");
+    expect(critical).toContain("openclaw gateway restart");
   });
 
   it("resets failure counter on success", async () => {
@@ -354,7 +373,7 @@ describe("createTelegramSendChatActionHandler", () => {
 
     expect(handler.isSuspended()).toBe(true);
     expect(logger.mock.calls.at(-1)).toEqual([
-      "CRITICAL: sendChatAction suspended after 2 consecutive 401 errors. Bot token is likely invalid. Telegram may DELETE the bot if requests continue. Replace the token and restart: openclaw channels restart telegram",
+      "CRITICAL: sendChatAction suspended after 2 consecutive 401 errors. Bot token is likely invalid. Telegram may DELETE the bot if requests continue. Replace the token with `openclaw channels add --channel telegram --token <token>`, then restart the gateway with `openclaw gateway restart`.",
     ]);
   });
 

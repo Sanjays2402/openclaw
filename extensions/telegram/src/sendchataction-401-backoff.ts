@@ -199,7 +199,8 @@ export function createTelegramSendChatActionHandler({
           logger(
             `CRITICAL: sendChatAction suspended after ${consecutive401Failures} consecutive 401 errors. ` +
               `Bot token is likely invalid. Telegram may DELETE the bot if requests continue. ` +
-              `Replace the token and restart: openclaw channels restart telegram`,
+              `Replace the token with \`openclaw channels add --channel telegram --token <token>\`, ` +
+              `then restart the gateway with \`openclaw gateway restart\`.`,
           );
         } else {
           logger(
