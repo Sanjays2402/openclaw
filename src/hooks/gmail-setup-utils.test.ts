@@ -73,7 +73,7 @@ describe("runGcloud interpreter resolution", () => {
   );
 
   itUnix(
-    "skips a python whose version is outside gcloud's supported range",
+    "skips Python versions below and above gcloud's supported range",
     async () => {
       const { runGcloud } = await loadGmailSetupUtils();
       const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-python-ver-"));
@@ -85,16 +85,17 @@ describe("runGcloud interpreter resolution", () => {
         await fs.writeFile(goodPython, "#!/bin/sh\nexit 0\n", "utf-8");
         await fs.chmod(goodPython, 0o755);
 
-        const shimDir = path.join(tmp, "shims");
-        await fs.mkdir(shimDir, { recursive: true });
-        // Two interpreters on PATH: the incompatible one is discovered first.
-        for (const name of ["python3", "python"]) {
-          const shim = path.join(shimDir, name);
+        const shimDirs = ["old", "future", "supported"].map((name) =>
+          path.join(tmp, `${name}-shims`),
+        );
+        for (const shimDir of shimDirs) {
+          await fs.mkdir(shimDir, { recursive: true });
+          const shim = path.join(shimDir, "python3");
           await fs.writeFile(shim, "#!/bin/sh\nexit 0\n", "utf-8");
           await fs.chmod(shim, 0o755);
         }
 
-        await withEnvAsync({ PATH: shimDir }, async () => {
+        await withEnvAsync({ PATH: shimDirs.join(path.delimiter) }, async () => {
           runCommandWithTimeoutMock
             // python3 -> Python 3.9 (unsupported by gcloud): must be skipped.
             .mockResolvedValueOnce({
@@ -104,7 +105,15 @@ describe("runGcloud interpreter resolution", () => {
               signal: null,
               killed: false,
             })
-            // python -> Python 3.12 (supported): should be selected.
+            // A future Python beyond gcloud's current cap must also be skipped.
+            .mockResolvedValueOnce({
+              stdout: `${path.join(tmp, "python-future")}\n3.15\n`,
+              stderr: "",
+              code: 0,
+              signal: null,
+              killed: false,
+            })
+            // Python 3.12 is supported and should be selected.
             .mockResolvedValueOnce({
               stdout: `${goodPython}\n3.12\n`,
               stderr: "",
