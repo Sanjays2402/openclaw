@@ -3,10 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { GPT5_BEHAVIOR_CONTRACT as CODEX_GPT5_BEHAVIOR_CONTRACT } from "openclaw/plugin-sdk/provider-model-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CODEX_GPT5_BEHAVIOR_CONTRACT } from "../../prompt-overlay.js";
 import { CodexAppServerRpcError } from "./client.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
+import type { CodexPluginThreadConfig } from "./plugin-thread-config.js";
 import { CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE } from "./protocol.js";
 import {
   sessionBindingIdentity,
@@ -36,22 +37,42 @@ type CodexThreadLifecycleTimingLogger = NonNullable<
   NonNullable<Parameters<typeof startOrResumeThreadImpl>[0]["timing"]>["log"]
 >;
 
+describe("Codex incognito thread persistence", () => {
+  it("marks only incognito-shaped harness sessions ephemeral", () => {
+    const appServer = createAppServerOptions() as never;
+    const persistent = createAttemptParams({ provider: "openai" });
+    persistent.sessionKey = "agent:main:dashboard:persistent-thread";
+    const incognito = createAttemptParams({ provider: "openai" });
+    incognito.sessionKey = "agent:main:internal-session-effects:incognito-private-thread";
+
+    const build = (params: EmbeddedRunAttemptParams) =>
+      buildThreadStartParams(params, {
+        appServer,
+        cwd: "/repo",
+        dynamicTools: [],
+      });
+
+    expect(build(persistent)).not.toHaveProperty("ephemeral");
+    expect(build(incognito)).toMatchObject({ ephemeral: true });
+  });
+});
+
 describe("Codex ring-zero thread config", () => {
   it("applies the restriction to both thread start and resume", () => {
     const params = createAttemptParams({ provider: "openai" });
-    params.toolsAllow = ["crestodian"];
+    params.toolsAllow = ["openclaw"];
     const appServer = createAppServerOptions() as never;
     const start = buildThreadStartParams(params, {
       appServer,
       cwd: "/repo",
       dynamicTools: [],
-      hostCrestodianActive: true,
+      hostSystemAgentActive: true,
       nativeCodeModeEnabled: false,
     });
     const resume = buildThreadResumeParams(params, {
       appServer,
       dynamicTools: [],
-      hostCrestodianActive: true,
+      hostSystemAgentActive: true,
       nativeCodeModeEnabled: false,
       threadId: "thread-1",
     });
@@ -78,9 +99,42 @@ describe("Codex ring-zero thread config", () => {
       appServer,
       cwd: "/repo",
       dynamicTools: [],
-      hostCrestodianActive: false,
+      hostSystemAgentActive: false,
+      config: { "features.goals": true },
     });
     expect(normal.baseInstructions).toBeUndefined();
+    expect(normal.config?.["features.goals"]).toBe(false);
+  });
+});
+
+describe("Codex delegation capability", () => {
+  it("disables native delegation and goal continuation on start and resume", () => {
+    const params = createAttemptParams({ provider: "openai" });
+    params.delegationCapability = "report_only";
+    const appServer = createAppServerOptions() as never;
+    const config = {
+      "features.multi_agent": true,
+      "features.multi_agent_v2": true,
+      "features.goals": true,
+    };
+    const start = buildThreadStartParams(params, {
+      appServer,
+      cwd: "/repo",
+      dynamicTools: [],
+      config,
+    });
+    const resume = buildThreadResumeParams(params, {
+      appServer,
+      dynamicTools: [],
+      threadId: "thread-1",
+      config,
+    });
+
+    for (const request of [start, resume]) {
+      expect(request.config?.["features.multi_agent"]).toBe(false);
+      expect(request.config?.["features.multi_agent_v2"]).toBe(false);
+      expect(request.config?.["features.goals"]).toBe(false);
+    }
   });
 });
 
@@ -222,6 +276,7 @@ function createThreadLifecycleAppServerOptions(): Parameters<
       headers: {},
     },
     codeModeOnly: false,
+    loopDetectionPreToolUseRelay: true,
     requestTimeoutMs: 60_000,
     turnCompletionIdleTimeoutMs: 60_000,
     approvalPolicy: "never",
@@ -229,6 +284,52 @@ function createThreadLifecycleAppServerOptions(): Parameters<
     sandbox: "workspace-write",
     connectionClass: "local-loopback",
     remoteAppsSubstrate: "preconfigured",
+  };
+}
+
+function createProvisionalPluginThreadConfigProvider(appId: string) {
+  const config: CodexPluginThreadConfig = {
+    enabled: true,
+    configPatch: {
+      apps: {
+        _default: {
+          enabled: false,
+          destructive_enabled: false,
+          open_world_enabled: false,
+        },
+        [appId]: {
+          enabled: true,
+          destructive_enabled: false,
+          open_world_enabled: true,
+          default_tools_approval_mode: "auto",
+        },
+      },
+    },
+    provisionalAppIds: [appId],
+    fingerprint: `plugin-config-${appId}`,
+    inputFingerprint: `plugin-input-${appId}`,
+    policyContext: {
+      fingerprint: `plugin-policy-${appId}`,
+      apps: {
+        [appId]: {
+          configKey: "linear",
+          marketplaceName: "openai-curated",
+          pluginName: "linear",
+          allowDestructiveActions: false,
+          destructiveApprovalMode: "deny",
+          mcpServerNames: [],
+        },
+      },
+      pluginAppIds: { linear: [appId] },
+    },
+    diagnostics: [],
+  };
+  return {
+    enabled: true,
+    inputFingerprint: config.inputFingerprint,
+    enabledPluginConfigKeys: ["linear"],
+    recoverablePluginConfigKeys: ["linear"],
+    build: vi.fn(async () => config),
   };
 }
 
@@ -395,6 +496,67 @@ describe("Codex app-server native code mode config", () => {
     expect(instructions).toContain(
       "Use OpenClaw `sessions_spawn` only for OpenClaw or ACP delegation, never as a substitute for `spawn_agent`.",
     );
+  });
+
+  it("adds native completion handoff guidance only when sessions_yield is available", () => {
+    const withSessionsYield = buildDeveloperInstructions(
+      createAttemptParams({ provider: "openai" }),
+      {
+        dynamicTools: [
+          {
+            type: "namespace",
+            name: "openclaw_direct",
+            description: "",
+            tools: [
+              {
+                type: "function",
+                name: "sessions_yield",
+                description: "End the current turn",
+                inputSchema: { type: "object" },
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const withoutSessionsYield = buildDeveloperInstructions(
+      createAttemptParams({ provider: "openai" }),
+      {
+        dynamicTools: [],
+      },
+    );
+    const withWrongNamespace = buildDeveloperInstructions(
+      createAttemptParams({ provider: "openai" }),
+      {
+        dynamicTools: [
+          {
+            type: "namespace",
+            name: "openclaw",
+            description: "",
+            tools: [
+              {
+                type: "function",
+                name: "sessions_yield",
+                description: "Different tool with the same leaf name",
+                inputSchema: { type: "object" },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(withSessionsYield).toContain(
+      "end the current turn with `openclaw_direct.sessions_yield`",
+    );
+    expect(withSessionsYield).toContain(
+      "Use native `wait_agent` only for an intentional same-turn wait",
+    );
+    expect(withSessionsYield).toContain("Never loop-poll for native child completion.");
+    expect(withoutSessionsYield).not.toContain("`openclaw_direct.sessions_yield`");
+    expect(withoutSessionsYield).not.toContain("native `wait_agent`");
+    expect(withWrongNamespace).not.toContain("`openclaw_direct.sessions_yield`");
+    expect(withWrongNamespace).not.toContain("native `wait_agent`");
   });
 
   it("summarizes deferred dynamic tool names in developer instructions", () => {
@@ -606,6 +768,7 @@ describe("Codex app-server native code mode config", () => {
       },
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -750,6 +913,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.multi_agent": false,
       "features.standalone_web_search": false,
@@ -861,6 +1025,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": true,
       "features.code_mode_only": true,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -882,6 +1047,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": true,
       "features.code_mode_only": true,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -939,6 +1105,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -963,6 +1130,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": false,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.standalone_web_search": false,
       web_search: "disabled",
     });
@@ -982,6 +1150,7 @@ describe("Codex app-server native code mode config", () => {
     expect(request.config).toEqual({
       "features.code_mode": false,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.standalone_web_search": false,
       web_search: "disabled",
     });
@@ -1011,6 +1180,7 @@ describe("Codex app-server native code mode config", () => {
       "features.hooks": true,
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -1034,6 +1204,7 @@ describe("Codex app-server native code mode config", () => {
       project_doc_max_bytes: 64_000,
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.goals": false,
       "features.apply_patch_streaming_events": true,
       "features.standalone_web_search": false,
       web_search: "cached",
@@ -1042,6 +1213,49 @@ describe("Codex app-server native code mode config", () => {
 });
 
 describe("Codex app-server turn input image sanitizing", () => {
+  it("carries native workspace temporary-root overrides into turn policy", () => {
+    const request = buildTurnStartParams(createAttemptParams({ provider: "openai" }), {
+      threadId: "thread-1",
+      cwd: "/tmp/qa/workspace",
+      appServer: {
+        ...createAppServerOptions(),
+        start: {
+          args: [
+            "app-server",
+            "-c",
+            "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+            "-c",
+            "sandbox_workspace_write.exclude_slash_tmp=true",
+          ],
+        },
+      } as never,
+    });
+
+    expect(request.sandboxPolicy).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/tmp/qa/workspace"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: true,
+    });
+  });
+
+  it("preserves implicit temporary writable roots for ordinary Codex turns", () => {
+    const request = buildTurnStartParams(createAttemptParams({ provider: "openai" }), {
+      threadId: "thread-1",
+      cwd: "/tmp/qa/workspace",
+      appServer: createAppServerOptions() as never,
+    });
+
+    expect(request.sandboxPolicy).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/tmp/qa/workspace"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    });
+  });
+
   it("uses an explicit turn sandbox policy override when provided", () => {
     const request = buildTurnStartParams(createAttemptParams({ provider: "openai" }), {
       threadId: "thread-1",
@@ -1166,6 +1380,7 @@ describe("Codex app-server turn params", () => {
         headers: {},
       },
       codeModeOnly: false,
+      loopDetectionPreToolUseRelay: true,
       requestTimeoutMs: 60_000,
       turnCompletionIdleTimeoutMs: 60_000,
       approvalPolicy: "on-request" as const,
@@ -1179,12 +1394,19 @@ describe("Codex app-server turn params", () => {
     const resumeParams = buildThreadResumeParams(params, { threadId: "thread-1", appServer });
     expect(resumeParams).toEqual({
       threadId: "thread-1",
+      excludeTurns: true,
+      initialTurnsPage: {
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      },
       model: "gpt-5.4-codex",
       approvalPolicy: "on-request",
       approvalsReviewer: "guardian_subagent",
       config: {
         "features.code_mode": true,
         "features.code_mode_only": false,
+        "features.goals": false,
         "features.apply_patch_streaming_events": true,
         "features.standalone_web_search": false,
         web_search: "cached",
@@ -1223,10 +1445,7 @@ describe("Codex app-server turn params", () => {
     params.thinkLevel = "medium";
     params.trigger = "heartbeat";
 
-    const heartbeatCollaborationMode = buildTurnCollaborationMode(params, {
-      heartbeatCollaborationInstructions:
-        "HEARTBEAT.md exists at /tmp/workspace/HEARTBEAT.md. Read it before proceeding.",
-    });
+    const heartbeatCollaborationMode = buildTurnCollaborationMode(params, {});
     expect(heartbeatCollaborationMode.mode).toBe("default");
     expect(heartbeatCollaborationMode.settings.model).toBe("gpt-5.4-codex");
     expect(heartbeatCollaborationMode.settings.reasoning_effort).toBe("medium");
@@ -1239,15 +1458,10 @@ describe("Codex app-server turn params", () => {
     expect(heartbeatCollaborationMode.settings.developer_instructions).toContain(
       "If `heartbeat_respond` is not already available and `tool_search` is available",
     );
-    expect(heartbeatCollaborationMode.settings.developer_instructions).toContain(
-      "HEARTBEAT.md exists at /tmp/workspace/HEARTBEAT.md.",
-    );
 
     params.bootstrapContextRunKind = "commitment-only";
     const commitmentCollaborationMode = buildTurnCollaborationMode(params, {
       turnScopedDeveloperInstructions: "Turn-only workspace instructions.",
-      heartbeatCollaborationInstructions:
-        "HEARTBEAT.md exists at /tmp/workspace/HEARTBEAT.md. Read it before proceeding.",
     });
     expect(commitmentCollaborationMode.settings.developer_instructions).toContain(
       "# Collaboration Mode: Default",
@@ -1258,16 +1472,11 @@ describe("Codex app-server turn params", () => {
     expect(commitmentCollaborationMode.settings.developer_instructions).not.toContain(
       "This is an OpenClaw heartbeat turn",
     );
-    expect(commitmentCollaborationMode.settings.developer_instructions).not.toContain(
-      "HEARTBEAT.md exists at /tmp/workspace/HEARTBEAT.md.",
-    );
 
     params.trigger = "user";
     expect(
       buildTurnCollaborationMode(params, {
         turnScopedDeveloperInstructions: "Turn-only workspace instructions.",
-        heartbeatCollaborationInstructions:
-          "HEARTBEAT.md exists at /tmp/workspace/HEARTBEAT.md. Read it before proceeding.",
       }).settings.developer_instructions,
     ).toContain("Turn-only workspace instructions.");
     expect(
@@ -1466,6 +1675,359 @@ describe("Codex app-server model provider selection", () => {
     const collaborationMode = request.collaborationMode as { settings?: Record<string, unknown> };
     expect(request.model).toBe("local-model");
     expect(collaborationMode.settings?.model).toBe("local-model");
+  });
+});
+
+describe("Codex plugin binding recovery", () => {
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-plugin-recovery-"));
+    resetCodexTestBindingStore();
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("does not rebuild a binding whose configured plugin is a settled negative", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(sessionFile, workspaceDir);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start" || method === "thread/resume") {
+        return threadStartResult("thread-settled");
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const build = vi.fn(async () => ({
+      enabled: true,
+      configPatch: {
+        apps: {
+          _default: {
+            enabled: false,
+            destructive_enabled: false,
+            open_world_enabled: false,
+          },
+        },
+      },
+      fingerprint: "plugin-config-settled",
+      inputFingerprint: "plugin-input-settled",
+      policyContext: { fingerprint: "plugin-policy-settled", apps: {}, pluginAppIds: {} },
+      diagnostics: [],
+    }));
+    const common = {
+      client: { request } as never,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+    };
+
+    await startOrResumeThread({
+      ...common,
+      pluginThreadConfig: {
+        enabled: true,
+        inputFingerprint: "plugin-input-settled",
+        enabledPluginConfigKeys: ["calendar"],
+        recoverablePluginConfigKeys: ["calendar"],
+        build,
+      },
+    });
+    await startOrResumeThread({
+      ...common,
+      pluginThreadConfig: {
+        enabled: true,
+        inputFingerprint: "plugin-input-settled",
+        enabledPluginConfigKeys: ["calendar"],
+        recoverablePluginConfigKeys: [],
+        build,
+      },
+    });
+
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/resume"]);
+  });
+
+  it("rebuilds once when a settled negative binding still enables the plugin", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(sessionFile, workspaceDir);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start" || method === "thread/resume") {
+        return threadStartResult("thread-settled-transition");
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const build = vi
+      .fn()
+      .mockResolvedValueOnce({
+        enabled: true,
+        configPatch: { apps: { calendar: { enabled: true } } },
+        fingerprint: "plugin-config-active",
+        inputFingerprint: "plugin-input-settled",
+        policyContext: {
+          fingerprint: "plugin-policy-active",
+          apps: {
+            calendar: {
+              configKey: "calendar",
+              marketplaceName: "openai-curated" as const,
+              pluginName: "calendar",
+              allowDestructiveActions: false,
+              mcpServerNames: [],
+            },
+          },
+          pluginAppIds: { calendar: ["calendar"] },
+        },
+        diagnostics: [],
+      })
+      .mockResolvedValue({
+        enabled: true,
+        configPatch: { apps: { _default: { enabled: false } } },
+        fingerprint: "plugin-config-settled",
+        inputFingerprint: "plugin-input-settled",
+        policyContext: { fingerprint: "plugin-policy-settled", apps: {}, pluginAppIds: {} },
+        diagnostics: [],
+      });
+    const common = {
+      client: { request } as never,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+    };
+
+    await startOrResumeThread({
+      ...common,
+      pluginThreadConfig: {
+        enabled: true,
+        inputFingerprint: "plugin-input-settled",
+        enabledPluginConfigKeys: ["calendar"],
+        recoverablePluginConfigKeys: ["calendar"],
+        build,
+      },
+    });
+    const settledProvider = {
+      enabled: true,
+      inputFingerprint: "plugin-input-settled",
+      enabledPluginConfigKeys: ["calendar"],
+      recoverablePluginConfigKeys: [],
+      build,
+    };
+    await startOrResumeThread({ ...common, pluginThreadConfig: settledProvider });
+    await startOrResumeThread({ ...common, pluginThreadConfig: settledProvider });
+
+    expect(build).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/start",
+      "thread/start",
+      "thread/resume",
+    ]);
+  });
+});
+
+describe("Codex provisional plugin app attestation", () => {
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-plugin-attestation-"));
+    resetCodexTestBindingStore();
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("attests the effective thread app before committing the binding", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const request = vi.fn(async (method: string, requestParams?: unknown) => {
+      if (method === "thread/start") {
+        return threadStartResult("thread-linear");
+      }
+      if (method === "app/installed") {
+        expect(requestParams).toEqual({
+          threadId: "thread-linear",
+          forceRefresh: true,
+        });
+        return {
+          apps: [
+            {
+              id: "linear-app",
+              runtimeName: "Linear",
+              enabled: true,
+              callable: true,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const mutate = vi.fn(
+      async (...args: Parameters<typeof testCodexAppServerBindingStore.mutate>) =>
+        await testCodexAppServerBindingStore.mutate(...args),
+    );
+    const bindingStore: CodexAppServerBindingStore = {
+      ...testCodexAppServerBindingStore,
+      mutate,
+    };
+
+    await startOrResumeThreadImpl({
+      client: { request } as never,
+      bindingStore,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+      pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+    });
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/start", "app/installed"]);
+    expect(request.mock.invocationCallOrder[1]).toBeLessThan(
+      mutate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    await expect(
+      testCodexAppServerBindingStore.read(
+        sessionBindingIdentity({
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          config: params.config,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      threadId: "thread-linear",
+      pluginAppsFingerprint: "plugin-config-linear-app",
+    });
+  });
+
+  it("deletes the persistent nonmaterialized thread when attestation fails", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const abandonClient = vi.fn(async () => undefined);
+    const request = vi.fn(
+      async (method: string, _requestParams?: unknown, _requestOptions?: unknown) => {
+        if (method === "thread/start") {
+          return threadStartResult("thread-linear-missing");
+        }
+        if (method === "app/installed") {
+          return { apps: [] };
+        }
+        if (method === "thread/delete") {
+          return {};
+        }
+        throw new Error(`unexpected method: ${method}`);
+      },
+    );
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        abandonClient,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+      }),
+    ).rejects.toThrow("linear-app:missing");
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/start",
+      "app/installed",
+      "thread/delete",
+    ]);
+    expect(request.mock.calls[2]?.[1]).toEqual({ threadId: "thread-linear-missing" });
+    expect(request.mock.calls[2]?.[2]).toEqual({ timeoutMs: 5_000 });
+    expect(abandonClient).not.toHaveBeenCalled();
+    await expect(
+      testCodexAppServerBindingStore.read(
+        sessionBindingIdentity({
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          config: params.config,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("abandons the client when a persistent attestation failure cannot delete the thread", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const abandonClient = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start") {
+        return threadStartResult("thread-linear-unsafe");
+      }
+      if (method === "app/installed") {
+        return { apps: [] };
+      }
+      if (method === "thread/delete") {
+        throw new Error("delete unavailable");
+      }
+      if (method === "thread/unsubscribe") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        abandonClient,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+      }),
+    ).rejects.toThrow("Codex plugin app attestation cleanup failed");
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/start",
+      "app/installed",
+      "thread/delete",
+      "thread/unsubscribe",
+    ]);
+    expect(abandonClient).toHaveBeenCalledOnce();
+  });
+
+  it("unsubscribes an ephemeral thread when attestation fails", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    params.sessionKey = "agent:main:internal-session-effects:incognito-plugin-attestation";
+    const abandonClient = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string, requestParams?: unknown) => {
+      if (method === "thread/start") {
+        expect(requestParams).toEqual(expect.objectContaining({ ephemeral: true }));
+        return threadStartResult("thread-linear-ephemeral");
+      }
+      if (method === "app/installed") {
+        return { apps: [] };
+      }
+      if (method === "thread/unsubscribe") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        abandonClient,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+      }),
+    ).rejects.toThrow("linear-app:missing");
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/start",
+      "app/installed",
+      "thread/unsubscribe",
+    ]);
+    expect(abandonClient).not.toHaveBeenCalled();
   });
 });
 
@@ -1750,6 +2312,141 @@ describe("Codex app-server supervised branch lifecycle", () => {
     });
     await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
       appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(commonParams.appServer),
+    });
+  });
+
+  it("cleans tracked supervision branches when provisional app attestation fails", async () => {
+    const sourceThreadId = "thread-source";
+    const probeThreadId = "thread-probe";
+    const finalThreadId = "thread-final";
+    const workspaceDir = path.join(tempDir, "workspace");
+    const attempt = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const identity = await seedPendingSupervisionBinding({
+      attempt,
+      cwd: workspaceDir,
+      pending: { sourceThreadId },
+    });
+    const abandonClient = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string, requestParams: unknown) => {
+      if (method === "thread/read") {
+        return { thread: sourceThread({ threadId: sourceThreadId }) };
+      }
+      if (method === "thread/fork") {
+        return nativeThreadResult(probeThreadId, "native-effective", "native-provider");
+      }
+      if (method === "thread/start") {
+        return nativeThreadResult(finalThreadId, "native-effective", "native-provider");
+      }
+      if (method === "app/installed") {
+        expect(requestParams).toEqual({
+          threadId: finalThreadId,
+          forceRefresh: true,
+        });
+        return { apps: [] };
+      }
+      if (method === "thread/delete") {
+        return {};
+      }
+      if (method === "thread/archive") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        abandonClient,
+        params: attempt,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+      }),
+    ).rejects.toThrow("linear-app:missing");
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
+      "thread/fork",
+      "thread/start",
+      "app/installed",
+      "thread/delete",
+      "thread/archive",
+    ]);
+    expect(request.mock.calls[4]?.[1]).toEqual({ threadId: finalThreadId });
+    expect(request.mock.calls[5]?.[1]).toEqual({ threadId: probeThreadId });
+    expect(abandonClient).not.toHaveBeenCalled();
+    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
+      pendingSupervisionBranch: {
+        sourceThreadId,
+      },
+    });
+    expect(
+      (await testCodexAppServerBindingStore.read(identity))?.pendingSupervisionBranch
+        ?.cleanupThreadIds ?? [],
+    ).toEqual([]);
+  });
+
+  it("abandons a supervised client when attestation cannot delete the canonical branch", async () => {
+    const sourceThreadId = "thread-source";
+    const probeThreadId = "thread-probe";
+    const finalThreadId = "thread-final";
+    const workspaceDir = path.join(tempDir, "workspace");
+    const attempt = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const identity = await seedPendingSupervisionBinding({
+      attempt,
+      cwd: workspaceDir,
+      pending: { sourceThreadId },
+    });
+    const abandonClient = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/read") {
+        return { thread: sourceThread({ threadId: sourceThreadId }) };
+      }
+      if (method === "thread/fork") {
+        return nativeThreadResult(probeThreadId, "native-effective", "native-provider");
+      }
+      if (method === "thread/start") {
+        return nativeThreadResult(finalThreadId, "native-effective", "native-provider");
+      }
+      if (method === "app/installed") {
+        return { apps: [] };
+      }
+      if (method === "thread/delete") {
+        throw new Error("delete unavailable");
+      }
+      if (method === "thread/unsubscribe") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        abandonClient,
+        params: attempt,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        pluginThreadConfig: createProvisionalPluginThreadConfigProvider("linear-app"),
+      }),
+    ).rejects.toThrow("Codex supervised plugin app attestation cleanup failed");
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "thread/read",
+      "thread/fork",
+      "thread/start",
+      "app/installed",
+      "thread/delete",
+      "thread/unsubscribe",
+    ]);
+    expect(abandonClient).toHaveBeenCalledOnce();
+    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
+      pendingSupervisionBranch: {
+        sourceThreadId,
+        cleanupThreadIds: [probeThreadId, finalThreadId],
+      },
     });
   });
 
@@ -2940,8 +3637,8 @@ describe("resolveReasoningEffort (#71946)", () => {
 
 describe("native Codex Ultra turn mapping", () => {
   it.each([
-    { modelId: "gpt-5.6-sol", expected: "ultra" },
-    { modelId: "gpt-5.6-terra", expected: "ultra" },
+    { modelId: "gpt-5.6-sol", expected: "max" },
+    { modelId: "gpt-5.6-terra", expected: "max" },
     { modelId: "gpt-5.6-luna", expected: "max" },
   ] as const)(
     "maps Ultra to $expected for $modelId with direct OpenAI API metadata",
@@ -2995,3 +3692,4 @@ describe("native Codex Ultra turn mapping", () => {
     expect(request).not.toHaveProperty("multiAgentMode");
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

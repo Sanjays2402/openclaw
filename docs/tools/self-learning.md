@@ -18,6 +18,11 @@ background model run and transcript review are appropriate for your workspace.
 
 ## Enable self-learning
 
+In Control UI, open **Plugins → Workshop** and switch on **Self-learning**. The
+change takes effect immediately; when another config writer has updated the
+file, Control UI refreshes the config snapshot and retries the toggle without a
+page or Gateway reload.
+
 Use the CLI:
 
 ```bash
@@ -47,6 +52,38 @@ openclaw config set skills.workshop.autonomous.enabled false --strict-json
 User-requested skill creation, `/learn`, and manual Skill Workshop operations
 continue to work while self-learning is disabled.
 
+## Review past sessions manually
+
+Manual history review is the conservative alternative to autonomous capture.
+Open **Plugins → Workshop** in the Control UI and select **Find skill ideas**.
+This does not change `skills.workshop.autonomous.enabled`.
+
+Each scan:
+
+- starts with the newest unreviewed sessions and moves backward;
+- reviews up to 20 substantial sessions with at least six model turns;
+- skips cron, heartbeat, hook, subagent, ACP, plugin-owned, and internal review
+  sessions;
+- redacts recognized secrets and bounds the transcript bundle before sending it
+  to the selected agent's configured model;
+- uses the same high bar as autonomous experience review; and
+- can create or revise at most three pending proposals, never live skills.
+
+The Workshop reports cumulative session count, date coverage, and ideas found.
+Select **Scan earlier work** for the next older window. When the cursor reaches
+the beginning of eligible history, the action changes to **Scan new work**.
+OpenClaw persists only cursor and coverage metadata in the shared state database;
+it does not create a second transcript archive.
+
+Sessions are scanned only when OpenClaw can prove their ownership and exclude
+external-hook content. After an upgrade, the current pre-upgrade transcript can
+be classified locally, but rotated pre-upgrade transcripts without per-run
+provenance are skipped. New transcripts retain this provenance across rotation.
+
+Manual scans still incur model-provider cost and send eligible conversation
+content to the configured provider. Use them only when that review matches the
+workspace's privacy and data-handling requirements.
+
 ## What OpenClaw can learn
 
 Self-learning has two conservative paths:
@@ -62,6 +99,12 @@ Self-learning has two conservative paths:
    OpenClaw can review the completed work for a reusable recovery technique or
    a stable procedure that would remove at least two future model or tool round
    trips.
+
+Generated proposals follow shared authoring standards: class-level names,
+one-sentence descriptions that lead with the task or trigger, and compact
+evidence-backed imperative steps. They retain supported pitfalls and
+verification checks, capture working fixes, and do not invent commands, paths,
+flags, or APIs.
 
 Good candidates include:
 
@@ -89,12 +132,24 @@ Experience review is deliberately delayed and bounded:
 - If any agent or reply run is still active, review waits another 30 seconds.
 - Only one experience review runs at a time.
 - Delayed review is process-local Gateway work. The Gateway must remain running
-  through the idle window; one-shot local and CLI-backed runtimes do not retain
-  enough trajectory and tool-availability context to schedule it.
+  through the idle window. CLI-backed harnesses can schedule review only when
+  they report the resolved model, exact model-iteration count, and actual
+  `skill_workshop` availability. The Codex app-server harness reports those
+  facts for its `openai/*` sessions; runtimes with missing facts still fail
+  closed.
 
 The foreground answer is never delayed for learning. A failed or ineligible
 turn does not start experience review, although direct user corrections can
 still be offered as a suggestion when autonomy is disabled.
+
+## Runtime support
+
+Delayed experience review requires the runtime to report its resolved model and
+actual `skill_workshop` availability. The embedded runner and the Codex
+app-server harness provide those facts; Codex also reports its exact model
+iteration count. Other CLI-backed runtimes fail closed until they provide the
+same runtime facts. Deterministic correction capture and `/learn` still work on
+those runtimes.
 
 ## What the reviewer receives
 
@@ -102,6 +157,12 @@ The background reviewer receives only the current turn, starting at its most
 recent user message. The rendered trajectory is capped at 60,000 characters;
 when necessary, OpenClaw keeps the first message and the newest evidence and
 marks the omitted middle.
+
+For Codex app-server sessions, OpenClaw counts unique upstream response
+completions as model iterations and uses the harness's frozen current-turn
+projection. The harness also attempts to mirror that projection into the agent's
+SQLite transcript before delayed review is scheduled; the reviewer does not
+need to reread the database.
 
 The reviewer reuses the resolved provider and model. It reuses the foreground
 auth profile when that identity is available and disables model fallbacks. The
@@ -168,13 +229,13 @@ model.
 
 ## Configuration
 
-| Setting                                    | Default     | Self-learning effect                                                                                                              |
-| ------------------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `skills.workshop.autonomous.enabled`       | `false`     | Enables direct correction capture and delayed experience review.                                                                  |
-| `skills.workshop.approvalPolicy`           | `"pending"` | Controls approval prompts for normal agent-initiated lifecycle actions; it does not expand the background reviewer's permissions. |
-| `skills.workshop.maxPending`               | `50`        | Caps pending and quarantined proposals per workspace.                                                                             |
-| `skills.workshop.maxSkillBytes`            | `40000`     | Caps proposal body size in bytes.                                                                                                 |
-| `skills.workshop.allowSymlinkTargetWrites` | `false`     | Affects apply behavior only; self-learning itself writes proposal state, not live skill targets.                                  |
+| Setting                                    | Default  | Self-learning effect                                                                                                              |
+| ------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `skills.workshop.autonomous.enabled`       | `false`  | Enables direct correction capture and delayed experience review.                                                                  |
+| `skills.workshop.approvalPolicy`           | `"auto"` | Controls approval prompts for normal agent-initiated lifecycle actions; it does not expand the background reviewer's permissions. |
+| `skills.workshop.maxPending`               | `50`     | Caps pending and quarantined proposals per workspace.                                                                             |
+| `skills.workshop.maxSkillBytes`            | `40000`  | Caps proposal body size in bytes.                                                                                                 |
+| `skills.workshop.allowSymlinkTargetWrites` | `false`  | Affects apply behavior only; self-learning itself writes proposal state, not live skill targets.                                  |
 
 For the exhaustive schema, ranges, and related skill settings, see
 [Skills config](/tools/skills-config#workshop-skills-workshop).

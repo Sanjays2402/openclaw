@@ -1,6 +1,7 @@
 // Codex tests cover plugin inventory plugin behavior.
 import { describe, expect, it } from "vitest";
 import { CodexAppInventoryCache } from "./app-inventory-cache.js";
+import { codexAppInventoryResponse } from "./app-inventory.test-helpers.js";
 import { CodexAppServerRpcError } from "./client.js";
 import {
   CODEX_PLUGINS_MARKETPLACE_NAME,
@@ -15,10 +16,8 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({
-        data: [appInfo("google-calendar-app", true)],
-        nextCursor: null,
-      }),
+      request: async (method, params) =>
+        codexAppInventoryResponse(method, [appInfo("google-calendar-app", true)], params),
     });
     const calls: string[] = [];
     const inventory = await readCodexPluginInventory({
@@ -84,10 +83,8 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({
-        data: [appInfo("github-app", true)],
-        nextCursor: null,
-      }),
+      request: async (method, params) =>
+        codexAppInventoryResponse(method, [appInfo("github-app", true)], params),
     });
 
     const listed = pluginList([
@@ -149,10 +146,8 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({
-        data: [appInfo("google-calendar-app", true)],
-        nextCursor: null,
-      }),
+      request: async (method, params) =>
+        codexAppInventoryResponse(method, [appInfo("google-calendar-app", true)], params),
     });
     const remoteSummary = pluginSummary("google-calendar@openai-curated-remote", {
       name: "google-calendar",
@@ -214,7 +209,8 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({ data: [appInfo("workspace-data-app", true)], nextCursor: null }),
+      request: async (method, params) =>
+        codexAppInventoryResponse(method, [appInfo("workspace-data-app", true)], params),
     });
     const calls: Array<{ method: string; params: unknown }> = [];
     const exactSummary = pluginSummary("workspace-data@workspace-directory", {
@@ -273,7 +269,7 @@ describe("Codex plugin inventory", () => {
     });
 
     expect(calls.slice(0, 2)).toStrictEqual([
-      { method: "plugin/list", params: { cwds: [] } },
+      { method: "plugin/list", params: {} },
       {
         method: "plugin/list",
         params: { cwds: [], marketplaceKinds: [CODEX_PLUGINS_WORKSPACE_MARKETPLACE_NAME] },
@@ -308,7 +304,7 @@ describe("Codex plugin inventory", () => {
       },
     });
 
-    expect(calls).toStrictEqual([{ cwds: [] }]);
+    expect(calls).toStrictEqual([{}]);
   });
 
   it("fails closed before plugin/read when a workspace summary lacks remotePluginId", async () => {
@@ -429,7 +425,7 @@ describe("Codex plugin inventory", () => {
     });
 
     expect(calls).toStrictEqual([
-      { method: "plugin/list", params: { cwds: [] } },
+      { method: "plugin/list", params: {} },
       {
         method: "plugin/list",
         params: { cwds: [], marketplaceKinds: [CODEX_PLUGINS_WORKSPACE_MARKETPLACE_NAME] },
@@ -490,10 +486,7 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({
-        data: [],
-        nextCursor: null,
-      }),
+      request: async (method, params) => codexAppInventoryResponse(method, [], params),
     });
     const inventory = await readCodexPluginInventory({
       pluginConfig: {
@@ -541,15 +534,12 @@ describe("Codex plugin inventory", () => {
     await appCache.refreshNow({
       key: "runtime",
       nowMs: 0,
-      request: async () => ({
-        data: [
-          {
-            ...appInfo("calendar-app", true),
-            pluginDisplayNames: ["Google Calendar"],
-          },
-        ],
-        nextCursor: null,
-      }),
+      request: async (method, params) =>
+        codexAppInventoryResponse(
+          method,
+          [{ ...appInfo("calendar-app", true), pluginDisplayNames: ["Google Calendar"] }],
+          params,
+        ),
     });
 
     const inventory = await readCodexPluginInventory({
@@ -606,8 +596,8 @@ describe("Codex plugin inventory", () => {
       appCache,
       appCacheKey: "runtime",
       request: async (method) => {
-        if (method === "app/list") {
-          return { data: [], nextCursor: null };
+        if (method === "app/installed" || method === "app/read") {
+          return codexAppInventoryResponse(method, []);
         }
         if (method === "plugin/list") {
           return pluginList([pluginSummary("google-calendar", { installed: true, enabled: true })]);

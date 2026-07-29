@@ -111,6 +111,7 @@ export type RealtimeVoiceBridgeCreateRequest = RealtimeVoiceBridgeCallbacks & {
   providerConfig: RealtimeVoiceProviderConfig;
   audioFormat?: RealtimeVoiceAudioFormat;
   instructions?: string;
+  language?: string;
   autoRespondToAudio?: boolean;
   interruptResponseOnInputAudio?: boolean;
   tools?: RealtimeVoiceTool[];
@@ -127,6 +128,8 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   silenceDurationMs?: number;
   prefixPaddingMs?: number;
   reasoningEffort?: string;
+  /** Host-injected agent delegation runner for provider-owned browser control channels. */
+  runAgentConsult?: (params: { prompt: string; signal?: AbortSignal }) => Promise<{ text: string }>;
 };
 
 export type RealtimeVoiceBrowserAudioContract = {
@@ -205,7 +208,7 @@ export type RealtimeVoiceBridge = {
     result: unknown,
     options?: RealtimeVoiceToolResultOptions,
   ): void | Promise<void>;
-  acknowledgeMark(): void;
+  acknowledgeMark(markName?: string): void;
   close(): void;
   isConnected(): boolean;
 };

@@ -17,6 +17,7 @@ type BaseAgentEndSideEffectsParams = Parameters<typeof runAgentHarnessAgentEndHo
 type AgentEndSideEffectsParams = Omit<BaseAgentEndSideEffectsParams, "ctx"> & {
   ctx: BaseAgentEndSideEffectsParams["ctx"] & {
     authProfileId?: string;
+    modelIterations?: number;
     skillWorkshopAvailable?: boolean;
     compacted?: boolean;
     messageChannel?: string | null;
@@ -37,7 +38,7 @@ type AgentEndSideEffectsParams = Omit<BaseAgentEndSideEffectsParams, "ctx"> & {
 async function runCoreAgentEndSideEffects(params: AgentEndSideEffectsParams): Promise<void> {
   try {
     const { scheduleSkillExperienceReview } =
-      await import("../../skills/workshop/experience-review.js");
+      await import("../../skills/workshop/experience-review-default.js");
     scheduleSkillExperienceReview({
       event: params.event,
       ctx: params.ctx,

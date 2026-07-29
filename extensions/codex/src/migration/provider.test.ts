@@ -10,10 +10,12 @@ import type { MigrationProviderContext } from "openclaw/plugin-sdk/plugin-entry"
 import { upsertAuthProfile } from "openclaw/plugin-sdk/provider-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultCodexAppInventoryCache } from "../app-server/app-inventory-cache.js";
+import { codexAppInventoryResponse } from "../app-server/app-inventory.test-helpers.js";
 import { CODEX_PLUGINS_MARKETPLACE_NAME } from "../app-server/config.js";
 import { buildCodexPluginAppCacheKey } from "../app-server/plugin-app-cache-key.js";
 import type { CodexGetAccountResponse, v2 } from "../app-server/protocol.js";
 import { buildCodexMigrationProvider } from "./provider.js";
+import { discoverCodexSource } from "./source.js";
 
 const appServerRequest = vi.hoisted(() => vi.fn());
 
@@ -47,6 +49,8 @@ function makeContext(params: {
   workspaceDir: string;
   overwrite?: boolean;
   includeSecrets?: boolean;
+  targetAgentId?: string;
+  itemKinds?: readonly string[];
   verifyPluginApps?: boolean;
   providerOptions?: MigrationProviderContext["providerOptions"];
   reportDir?: string;
@@ -67,6 +71,8 @@ function makeContext(params: {
     source: params.source,
     stateDir: params.stateDir,
     includeSecrets: params.includeSecrets,
+    targetAgentId: params.targetAgentId,
+    itemKinds: params.itemKinds,
     overwrite: params.overwrite,
     providerOptions:
       params.providerOptions ?? (params.verifyPluginApps ? { verifyPluginApps: true } : undefined),
@@ -195,6 +201,180 @@ describe("buildCodexMigrationProvider", () => {
   beforeEach(() => {
     appServerRequest.mockRejectedValue(new Error("codex app-server unavailable"));
   });
+
+  it("preserves whitespace in nonempty CODEX_HOME values", async () => {
+    const root = await makeTempRoot();
+    const codexHome = path.join(root, " spaced ");
+    await writeFile(path.join(codexHome, "memories", "MEMORY.md"), "# Memory\n");
+    vi.stubEnv("CODEX_HOME", codexHome);
+
+    const source = await discoverCodexSource({ memoryOnly: true });
+
+    expect(source.codexHome).toBe(codexHome);
+    expect(source.memoryFiles.map((entry) => entry.path)).toEqual([
+      path.join(codexHome, "memories", "MEMORY.md"),
+    ]);
+  });
+
+  it("plans and imports only consolidated Codex memory into the selected agent", async () => {
+    const fixture = await createCodexFixture();
+    const targetWorkspace = path.join(fixture.root, "workspace-research");
+    const reportDir = path.join(fixture.root, "report");
+    await writeFile(path.join(fixture.codexHome, "memories", "MEMORY.md"), "# Memory\n");
+    await writeFile(path.join(fixture.codexHome, "memories", "memory_summary.md"), "# Summary\n");
+    await writeFile(
+      path.join(fixture.codexHome, "memories", "rollout_summaries", "private.md"),
+      "# Raw rollout\n",
+    );
+    const config = {
+      agents: {
+        defaults: { workspace: fixture.workspaceDir },
+        list: [
+          { id: "main", default: true },
+          { id: "research", workspace: targetWorkspace },
+        ],
+      },
+    } as MigrationProviderContext["config"];
+    const context = makeContext({
+      source: fixture.codexHome,
+      stateDir: fixture.stateDir,
+      workspaceDir: fixture.workspaceDir,
+      reportDir,
+      config,
+      targetAgentId: "research",
+      itemKinds: ["memory"],
+      verifyPluginApps: true,
+    });
+    const provider = buildCodexMigrationProvider();
+
+    const plan = await provider.plan(context);
+
+    expect(appServerRequest).not.toHaveBeenCalled();
+    expect(plan.items.map((item) => item.id)).toEqual([
+      "memory:codex:MEMORY.md",
+      "memory:codex:memory_summary.md",
+    ]);
+    expect(plan.items.every((item) => item.kind === "memory")).toBe(true);
+    expect(plan.items.every((item) => item.target?.startsWith(targetWorkspace))).toBe(true);
+
+    const result = await provider.apply(context, plan);
+
+    expect(result.summary).toMatchObject({ migrated: 2, errors: 0, conflicts: 0 });
+    await expect(
+      fs.readFile(path.join(targetWorkspace, "memory", "imports", "codex", "MEMORY.md"), "utf8"),
+    ).resolves.toBe("# Memory\n");
+    await expect(
+      fs.access(path.join(targetWorkspace, "memory", "imports", "codex", "private.md")),
+    ).rejects.toThrow();
+  });
+
+  it("skips unrelated Codex app-server preparation for memory-only imports", async () => {
+    const fixture = await createCodexFixture();
+    const provider = buildCodexMigrationProvider();
+    const preparation = provider.prepareApply?.(
+      makeContext({
+        source: fixture.codexHome,
+        stateDir: fixture.stateDir,
+        workspaceDir: fixture.workspaceDir,
+        itemKinds: ["memory"],
+      }),
+    );
+
+    expect(preparation).toBeUndefined();
+  });
+
+  it("rejects non-file Codex consolidated memory candidates", async () => {
+    const fixture = await createCodexFixture();
+    await fs.mkdir(path.join(fixture.codexHome, "memories", "MEMORY.md"), {
+      recursive: true,
+    });
+    const provider = buildCodexMigrationProvider();
+
+    await expect(
+      provider.plan(
+        makeContext({
+          source: fixture.codexHome,
+          stateDir: fixture.stateDir,
+          workspaceDir: fixture.workspaceDir,
+          itemKinds: ["memory"],
+        }),
+      ),
+    ).rejects.toThrow("must be a regular file");
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "rejects symlinked Codex consolidated memory candidates",
+    async () => {
+      const fixture = await createCodexFixture();
+      const actualMemory = path.join(fixture.root, "actual-memory.md");
+      const memoryPath = path.join(fixture.codexHome, "memories", "MEMORY.md");
+      await writeFile(actualMemory, "# Memory\n");
+      await fs.mkdir(path.dirname(memoryPath), { recursive: true });
+      await fs.symlink(actualMemory, memoryPath);
+      const provider = buildCodexMigrationProvider();
+
+      await expect(
+        provider.plan(
+          makeContext({
+            source: fixture.codexHome,
+            stateDir: fixture.stateDir,
+            workspaceDir: fixture.workspaceDir,
+            itemKinds: ["memory"],
+          }),
+        ),
+      ).rejects.toThrow("must not be a symbolic link");
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "rejects a symlinked import destination that resolves into Codex memory",
+    async () => {
+      const fixture = await createCodexFixture();
+      const memoryDir = path.join(fixture.codexHome, "memories");
+      await writeFile(path.join(memoryDir, "MEMORY.md"), "# Memory\n");
+      await fs.mkdir(fixture.workspaceDir, { recursive: true });
+      await fs.symlink(memoryDir, path.join(fixture.workspaceDir, "memory"));
+      const provider = buildCodexMigrationProvider();
+
+      await expect(
+        provider.plan(
+          makeContext({
+            source: fixture.codexHome,
+            stateDir: fixture.stateDir,
+            workspaceDir: fixture.workspaceDir,
+            itemKinds: ["memory"],
+          }),
+        ),
+      ).rejects.toThrow("destination must stay in the selected workspace");
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "marks a dangling Codex memory destination symlink as a conflict",
+    async () => {
+      const fixture = await createCodexFixture();
+      const target = path.join(fixture.workspaceDir, "memory", "imports", "codex", "MEMORY.md");
+      await writeFile(path.join(fixture.codexHome, "memories", "MEMORY.md"), "# Memory\n");
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(path.join(fixture.root, "missing-memory.md"), target);
+      const provider = buildCodexMigrationProvider();
+
+      const plan = await provider.plan(
+        makeContext({
+          source: fixture.codexHome,
+          stateDir: fixture.stateDir,
+          workspaceDir: fixture.workspaceDir,
+          itemKinds: ["memory"],
+          overwrite: true,
+        }),
+      );
+
+      expect(findItem(plan.items, "memory:codex:MEMORY.md")).toMatchObject({
+        status: "conflict",
+        reason: "target is not a regular file",
+      });
+    },
+  );
 
   it("plans Codex skills while keeping plugins and native config explicit", async () => {
     const fixture = await createCodexFixture();
@@ -816,7 +996,16 @@ describe("buildCodexMigrationProvider", () => {
     expect(configState.agents?.defaults?.model).toBeUndefined();
   });
 
-  it("skips source-installed plugins whose owned apps are inaccessible", async () => {
+  it.each([
+    {
+      name: "skips source-installed plugins whose owned apps are inaccessible",
+      isEnabled: true,
+    },
+    {
+      name: "skips source-installed plugins whose disabled owned apps are non-callable",
+      isEnabled: false,
+    },
+  ])("$name", async ({ isEnabled }) => {
     const fixture = await createCodexFixture();
     appServerRequest.mockImplementation(
       async ({ method, requestParams }: { method: string; requestParams?: unknown }) => {
@@ -831,13 +1020,15 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "account/read") {
           return chatGptAccount();
         }
-        if (method === "app/list") {
-          expectRecordFields(requestParams, { forceRefetch: true });
-          return appsList([
+        if (method === "app/installed" || method === "app/read") {
+          if (method === "app/installed") {
+            expectRecordFields(requestParams, { forceRefresh: true });
+          }
+          return codexAppInventoryResponse(method, [
             appInfo("asdk_app_readwise", {
               name: "Readwise",
               isAccessible: false,
-              isEnabled: true,
+              isEnabled,
             }),
           ]);
         }
@@ -874,16 +1065,16 @@ describe("buildCodexMigrationProvider", () => {
         id: "asdk_app_readwise",
         name: "Readwise",
         isAccessible: false,
-        isEnabled: true,
+        isEnabled,
         needsAuth: false,
       },
     ]);
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      1,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(1);
   });
 
-  it("plans app-backed plugins without source app/list by default", async () => {
+  it("plans app-backed plugins without source app inventory by default", async () => {
     const fixture = await createCodexFixture();
     appServerRequest.mockImplementation(async ({ method }: { method: string }) => {
       if (method === "plugin/list") {
@@ -918,9 +1109,9 @@ describe("buildCodexMigrationProvider", () => {
       status: "planned",
     });
     expect(plan.warnings).toEqual([]);
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      0,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(0);
   });
 
   it("warns and skips app-backed plugins when source Codex account is not ChatGPT subscription auth", async () => {
@@ -974,9 +1165,9 @@ describe("buildCodexMigrationProvider", () => {
     expect(plan.warnings).toEqual([
       "Codex app-backed plugin migration requires the Codex app-server source account to be logged in with a ChatGPT subscription account. Log in to the Codex app with subscription auth; OpenClaw auth or API-key auth does not satisfy Codex app connector access.",
     ]);
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      0,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(0);
   });
 
   it("warns and skips app-backed plugins when source Codex account is missing", async () => {
@@ -1012,9 +1203,9 @@ describe("buildCodexMigrationProvider", () => {
       reason: "codex_subscription_required",
       status: "skipped",
     });
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      0,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(0);
   });
 
   it("falls through to app inventory when source account read fails and app verification is requested", async () => {
@@ -1029,8 +1220,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "account/read") {
         throw new Error("account unavailable");
       }
-      if (method === "app/list") {
-        return appsList([appInfo("app-gmail")]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, [appInfo("app-gmail")]);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1050,9 +1241,9 @@ describe("buildCodexMigrationProvider", () => {
       action: "install",
       status: "planned",
     });
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      1,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(1);
   });
 
   it("skips app-backed plugins by default when source account read fails", async () => {
@@ -1089,9 +1280,9 @@ describe("buildCodexMigrationProvider", () => {
       status: "skipped",
     });
     expectRecordFields(manualItem.details, { error: "account unavailable" });
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      0,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(0);
   });
 
   it("reads source plugin readiness with native source auth instead of target agent auth", async () => {
@@ -1108,8 +1299,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "account/read") {
         return chatGptAccount();
       }
-      if (method === "app/list") {
-        return appsList([appInfo("app-google-calendar")]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, [appInfo("app-google-calendar")]);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1136,7 +1327,7 @@ describe("buildCodexMigrationProvider", () => {
       }),
     );
 
-    expect(appServerRequest).toHaveBeenCalledTimes(4);
+    expect(appServerRequest).toHaveBeenCalledTimes(5);
     for (const [arg] of appServerRequest.mock.calls) {
       expect(arg.authProfileId).toBeNull();
       expect(arg.isolated).toBe(true);
@@ -1164,8 +1355,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "account/read") {
         return chatGptAccount();
       }
-      if (method === "app/list") {
-        return appsList([
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, [
           appInfo("asdk_app_readwise", {
             name: "Readwise",
             isAccessible: false,
@@ -1216,7 +1407,12 @@ describe("buildCodexMigrationProvider", () => {
     const fixture = await createCodexFixture();
     await defaultCodexAppInventoryCache.refreshNow({
       key: sourceAppCacheKey(fixture),
-      request: async () => appsList([appInfo("app-google-calendar", { isAccessible: false })]),
+      request: async (method, params) =>
+        codexAppInventoryResponse(
+          method,
+          [appInfo("app-google-calendar", { isAccessible: false })],
+          params,
+        ),
     });
     appServerRequest.mockImplementation(
       async ({ method, requestParams }: { method: string; requestParams?: unknown }) => {
@@ -1233,9 +1429,14 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "account/read") {
           return chatGptAccount();
         }
-        if (method === "app/list") {
-          expectRecordFields(requestParams, { forceRefetch: true });
-          return appsList([appInfo("app-google-calendar"), appInfo("app-gmail")]);
+        if (method === "app/installed" || method === "app/read") {
+          if (method === "app/installed") {
+            expectRecordFields(requestParams, { forceRefresh: true });
+          }
+          return codexAppInventoryResponse(method, [
+            appInfo("app-google-calendar"),
+            appInfo("app-gmail"),
+          ]);
         }
         throw new Error(`unexpected request ${method}`);
       },
@@ -1253,9 +1454,9 @@ describe("buildCodexMigrationProvider", () => {
 
     expectRecordFields(findItem(plan.items, "plugin:google-calendar"), { status: "planned" });
     expectRecordFields(findItem(plan.items, "plugin:gmail"), { status: "planned" });
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      1,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(1);
   });
 
   it("fails closed for disabled plugins and plugin/read failures", async () => {
@@ -1295,9 +1496,9 @@ describe("buildCodexMigrationProvider", () => {
       status: "skipped",
     });
     expect(plan.items.some((item) => item.id === "config:codex-plugins")).toBe(false);
-    expect(appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/list")).toHaveLength(
-      0,
-    );
+    expect(
+      appServerRequest.mock.calls.filter(([arg]) => arg.method === "app/installed"),
+    ).toHaveLength(0);
   });
 
   it("fails closed when app inventory refresh fails for app-backed plugins", async () => {
@@ -1312,7 +1513,7 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "account/read") {
         return chatGptAccount();
       }
-      if (method === "app/list") {
+      if (method === "app/installed") {
         throw new Error("app inventory unavailable");
       }
       throw new Error(`unexpected request ${method}`);
@@ -1350,8 +1551,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "account/read") {
         return chatGptAccount();
       }
-      if (method === "app/list") {
-        return appsList([appInfo("ready-app"), appInfo("auth-app")]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, [appInfo("ready-app"), appInfo("auth-app")]);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1455,8 +1656,8 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "config/mcpServer/reload") {
           return {};
         }
-        if (method === "app/list") {
-          return appsList([]);
+        if (method === "app/installed" || method === "app/read") {
+          return codexAppInventoryResponse(method, []);
         }
         throw new Error(`unexpected request ${method}`);
       },
@@ -1547,8 +1748,8 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "config/mcpServer/reload") {
           return {};
         }
-        if (method === "app/list") {
-          return appsList([]);
+        if (method === "app/installed" || method === "app/read") {
+          return codexAppInventoryResponse(method, []);
         }
         throw new Error(`unexpected request ${method}`);
       },
@@ -1612,8 +1813,8 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "config/mcpServer/reload") {
           return {};
         }
-        if (method === "app/list") {
-          return appsList([]);
+        if (method === "app/installed" || method === "app/read") {
+          return codexAppInventoryResponse(method, []);
         }
         throw new Error(`unexpected request ${method}`);
       },
@@ -1738,8 +1939,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1795,8 +1996,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1853,7 +2054,8 @@ describe("buildCodexMigrationProvider", () => {
     const sourceKey = sourceAppCacheKey(fixture);
     await defaultCodexAppInventoryCache.refreshNow({
       key: sourceKey,
-      request: async () => appsList([appInfo("source-only-app")]),
+      request: async (method, params) =>
+        codexAppInventoryResponse(method, [appInfo("source-only-app")], params),
     });
     const configState: MigrationProviderContext["config"] = {
       plugins: {
@@ -1898,8 +2100,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -1982,8 +2184,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -2059,8 +2261,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -2130,8 +2332,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -2197,8 +2399,8 @@ describe("buildCodexMigrationProvider", () => {
       if (method === "config/mcpServer/reload") {
         return {};
       }
-      if (method === "app/list") {
-        return appsList([]);
+      if (method === "app/installed" || method === "app/read") {
+        return codexAppInventoryResponse(method, []);
       }
       throw new Error(`unexpected request ${method}`);
     });
@@ -2284,8 +2486,8 @@ describe("buildCodexMigrationProvider", () => {
       reason: "install failed",
     });
     expectRecordFields(findItem(result.items, "config:codex-plugins"), {
-      status: "skipped",
-      reason: "no selected Codex plugins",
+      status: "warning",
+      reason: "selected Codex plugin activation is incomplete",
     });
     expect(configState.plugins?.entries?.codex?.config?.codexPlugins).toBeUndefined();
   });
@@ -2421,10 +2623,6 @@ function appInfo(id: string, overrides: Partial<v2.AppInfo> = {}): v2.AppInfo {
   };
 }
 
-function appsList(apps: v2.AppInfo[]): v2.AppsListResponse {
-  return { data: apps, nextCursor: null };
-}
-
 function chatGptAccount(): CodexGetAccountResponse {
   return {
     account: { type: "chatgpt", email: "codex@example.test", planType: "plus" },
@@ -2446,3 +2644,4 @@ function pluginSummary(id: string, overrides: Partial<v2.PluginSummary> = {}): v
     ...overrides,
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
