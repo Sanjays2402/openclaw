@@ -252,7 +252,10 @@ export async function reconcileTerminalSourceReplyDelivery(params: {
     return "not-delivered";
   }
   if (
-    !matchesDeliveredSourceTargets(params.mirror, deliveryFact) ||
+    !matchesDeliveredSourceTargets(
+      { ...params.mirror, deliveredPayload: params.deliveredPayload },
+      deliveryFact,
+    ) ||
     !isExactCurrentSourceConversation({
       ...params.mirror,
       deliveredPayload: params.deliveredPayload,
@@ -358,8 +361,21 @@ function matchesDeliveredSourceTargets(
 ): boolean {
   // Requested routes cannot override contradictory transport facts. Match each
   // reported recipient independently, without inheriting requested thread aliases.
+  // The delivered thread comes from the transport receipt, so a topic send still
+  // matches its topic-qualified source while another chat, another topic, or a
+  // contradictory multipart receipt keeps failing closed.
+  const deliveredThreadId = normalizeOptionalString(resolveDeliveryReceipt(params)?.threadId);
   return (delivery?.deliveredTargets ?? []).every((target) =>
-    matchesCurrentSourceTarget({ ...params, actionParams: { target } }, "match"),
+    matchesCurrentSourceTarget(
+      {
+        ...params,
+        actionParams: {
+          target,
+          ...(deliveredThreadId ? { threadId: deliveredThreadId } : {}),
+        },
+      },
+      "match",
+    ),
   );
 }
 
