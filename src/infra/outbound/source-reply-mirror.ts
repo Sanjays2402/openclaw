@@ -369,7 +369,7 @@ function matchesDeliveredSourceTargets(
     Array.isArray(receipt?.parts) &&
     receipt.parts.some((part) => {
       const threadId = normalizeOptionalString(asRecord(part)?.threadId);
-      return threadId !== undefined && threadId !== currentThreadId;
+      return threadId !== undefined && threadId !== (deliveredThreadId ?? currentThreadId);
     })
   ) {
     return false;

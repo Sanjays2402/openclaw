@@ -134,6 +134,32 @@ describe("reconcileTerminalSourceReplyDelivery", () => {
 });
 
 describe("isDeliveredCurrentSourceReply", () => {
+  it("counts a reply that starts a thread on the current inbound message", () => {
+    expect(
+      isDeliveredCurrentSourceReply({
+        action: "reply",
+        channel: "slack",
+        actionParams: { target: "C123", messageId: "1" },
+        cfg: {},
+        sessionKey: "agent:main:slack:channel:C123",
+        toolContext: {
+          currentChannelProvider: "slack",
+          currentChannelId: "C123",
+          currentMessageId: "1",
+        },
+        deliveredPayload: {
+          ok: true,
+          messageId: "2",
+          channelId: "C123",
+          receipt: {
+            threadId: "1",
+            parts: [{ platformMessageId: "2", threadId: "1", kind: "text", index: 0 }],
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("matches a canonical Google Chat thread receipt to its inbound source thread", () => {
     const params = {
       action: "send",
