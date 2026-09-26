@@ -136,7 +136,7 @@ describe("runMessageAction core send routing", () => {
         return delivered.chatId === source.chatId && delivered.threadId === source.threadId;
       });
     };
-    const telegramPlugin = {
+    const telegramPlugin: ChannelPlugin = {
       ...createOutboundTestPlugin({
         id: "telegram",
         messaging: { targetResolver: { looksLikeId: () => true } },
@@ -149,13 +149,12 @@ describe("runMessageAction core send routing", () => {
       },
       threading: {
         matchesToolContextTarget,
-        resolveCurrentChannelId: ({ to, threadId }: { to: string; threadId?: string }) => {
+        resolveCurrentChannelId: ({ to, threadId }) => {
           if (threadId == null) {
             return to;
           }
           return targetIdentity(to).threadId != null ? to : `${to}:topic:${threadId}`;
         },
-        resolveChannelThreadAddressing: () => "address" as const,
       },
     };
     setActivePluginRegistry(
@@ -188,6 +187,7 @@ describe("runMessageAction core send routing", () => {
         channel: "telegram" as const,
         action: "send" as const,
         handledBy: "core" as const,
+        to: input.params.target,
         payload: {
           channel: "telegram",
           messageId: "m1",

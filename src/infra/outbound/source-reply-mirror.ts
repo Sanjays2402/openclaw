@@ -361,10 +361,19 @@ function matchesDeliveredSourceTargets(
 ): boolean {
   // Requested routes cannot override contradictory transport facts. Match each
   // reported recipient independently, without inheriting requested thread aliases.
-  // The delivered thread comes from the transport receipt, so a topic send still
-  // matches its topic-qualified source while another chat, another topic, or a
-  // contradictory multipart receipt keeps failing closed.
-  const deliveredThreadId = normalizeOptionalString(resolveDeliveryReceipt(params)?.threadId);
+  // Aggregate metadata cannot hide a physical message delivered to another topic.
+  const receipt = resolveDeliveryReceipt(params);
+  const deliveredThreadId = normalizeOptionalString(receipt?.threadId);
+  const currentThreadId = normalizeOptionalString(params.toolContext?.currentThreadTs);
+  if (
+    Array.isArray(receipt?.parts) &&
+    receipt.parts.some((part) => {
+      const threadId = normalizeOptionalString(asRecord(part)?.threadId);
+      return threadId !== undefined && threadId !== currentThreadId;
+    })
+  ) {
+    return false;
+  }
   return (delivery?.deliveredTargets ?? []).every((target) =>
     matchesCurrentSourceTarget(
       {

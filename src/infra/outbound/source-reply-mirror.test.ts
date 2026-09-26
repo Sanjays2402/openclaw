@@ -338,7 +338,13 @@ describe("telegram topic source replies (regression for #157277)", () => {
     };
     channelPluginMocks.getChannelPlugin.mockReturnValue({
       threading: {
-        matchesToolContextTarget: ({ target, toolContext }) =>
+        matchesToolContextTarget: ({
+          target,
+          toolContext,
+        }: {
+          target: string;
+          toolContext: { currentMessagingTarget?: string; currentChannelId?: string };
+        }) =>
           [toolContext.currentMessagingTarget, toolContext.currentChannelId].some((current) =>
             identitiesMatch(target, current),
           ),
@@ -392,6 +398,7 @@ describe("telegram topic source replies (regression for #157277)", () => {
         chatId: "-100123",
         receipt: {
           platformMessageIds: ["4", "5"],
+          threadId: "77",
           parts: [
             { platformMessageId: "4", threadId: "77", kind: "text", index: 0 },
             { platformMessageId: "5", threadId: "78", kind: "text", index: 1 },
