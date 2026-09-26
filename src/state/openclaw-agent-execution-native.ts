@@ -23,6 +23,7 @@ import {
   runSqliteWorkerStoreOperation,
   type SqliteWorkerStore,
 } from "../infra/sqlite-worker-store.js";
+import { captureAgentDatabasePreparationJournal } from "./agent-database-admission.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import { captureOpenClawAgentDatabaseRegistration } from "./openclaw-agent-db-registry-listing.js";
 import {
@@ -134,6 +135,9 @@ export function createAgentDatabaseNativeGeneration(
       assertCallerCurrent?: () => void,
     ): SqliteWorkerAdmissionFactory =>
     (operation) => {
+      const assertPreparationJournal = captureAgentDatabasePreparationJournal(agentId, {
+        env: context.environment,
+      });
       const nativeLocations = [
         pathname,
         ...(nativeIdentity ? [nativeIdentity.nativeLocation] : []),
@@ -266,19 +270,18 @@ export function createAgentDatabaseNativeGeneration(
             birthtime: receivedIdentity.birthtime,
             nativeLocation: receivedIdentity.nativeLocation,
           });
-          assertCallerCurrent?.();
+          assertPreparationJournal?.(
+            isRecord(facts) ? facts.agentDeletionJournalPresent : undefined,
+          );
           nativeIdentity ??= receivedIdentity;
         }
         return false;
       };
-      const prepareGrant = (request: SqliteWorkerAdmissionRequest) => {
-        assertCurrent();
-        assertCallerCurrent?.();
-        if (request.stage === "open") {
-          registration?.begin();
-        }
-      };
       return source.createAdmission({
+        attachment: {
+          kind: "agent-execution",
+          startupJournal: assertPreparationJournal !== undefined,
+        },
         nativeLocations,
         assertCurrent,
         authorize(request) {
@@ -286,7 +289,11 @@ export function createAgentDatabaseNativeGeneration(
             return;
           }
           source.assertCurrent();
-          prepareGrant(request);
+          assertCurrent();
+          assertCallerCurrent?.();
+          if (request.stage === "open") {
+            registration?.begin();
+          }
           if (request.stage === "prepare" && nativeIdentity && isRecord(request.facts)) {
             receiveValidation?.(nativeIdentity.physicalIdentity, request.facts.validation);
             receiveValidation = undefined;
@@ -308,6 +315,7 @@ export function createAgentDatabaseNativeGeneration(
             agentId,
             agentPath: pathname,
             admission: context.admission,
+            onRegistryChange: source.onRegistryChange,
           })
         : undefined;
       const openStore = () =>
@@ -382,12 +390,13 @@ export function createAgentDatabaseNativeGeneration(
         agentId,
         agentPath: pathname,
         admission: context.admission,
+        onRegistryChange: source.onRegistryChange,
       });
       await settleAgentRegistration(registration, async () => {
         await runSqliteWorkerStoreOperation(
           store,
           (scope) => scope.execute({ type: "database.prepareWrite", input: undefined }),
-          context,
+          undefined,
           assertCurrent,
           admission(source, registration, assertCallerCurrent),
         );
@@ -402,7 +411,7 @@ export function createAgentDatabaseNativeGeneration(
     return runSqliteWorkerStoreOperation(
       store,
       operation,
-      context,
+      undefined,
       assertCurrent,
       admission(source, undefined, assertCallerCurrent),
     );
@@ -433,8 +442,7 @@ export function createAgentDatabaseNativeGeneration(
   return {
     failed: () =>
       openingFailed || Boolean(openedStore && !isSqliteWorkerStoreAvailable(openedStore)),
-    run: (source, operation, assertCallerCurrent, createIfMissing) =>
-      run(source, operation, assertCallerCurrent, createIfMissing),
+    run,
     close() {
       retiring = true;
       closing ??= (async () => {
@@ -443,7 +451,10 @@ export function createAgentDatabaseNativeGeneration(
           try {
             await opening.then(
               (store) => store?.close(),
-              () => closeUnclaimedSharedStateSqliteWorkers(pathname),
+              () =>
+                openedStore
+                  ? openedStore.close()
+                  : closeUnclaimedSharedStateSqliteWorkers(pathname),
             );
           } catch (error) {
             errors.push(error);
