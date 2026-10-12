@@ -278,12 +278,16 @@ Keep this scratch empty unless you want a tiny checklist.
   });
 
   it("returns true for a bare documentation link list item", () => {
-    expect(isHeartbeatContentEffectivelyEmpty("- [Heartbeat config](/gateway/config-agents)")).toBe(true);
+    expect(isHeartbeatContentEffectivelyEmpty("- [Heartbeat config](/gateway/config-agents)")).toBe(
+      true,
+    );
     expect(isHeartbeatContentEffectivelyEmpty("* [top](#heartbeat)")).toBe(true);
   });
 
   it("returns false for links that carry real content", () => {
-    expect(isHeartbeatContentEffectivelyEmpty("- [read this](https://example.com/doc)")).toBe(false);
+    expect(isHeartbeatContentEffectivelyEmpty("- [read this](https://example.com/doc)")).toBe(
+      false,
+    );
     expect(
       isHeartbeatContentEffectivelyEmpty("- [docs](/gateway/config-agents) before Friday"),
     ).toBe(false);
